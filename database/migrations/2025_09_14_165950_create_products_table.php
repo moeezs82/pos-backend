@@ -39,6 +39,7 @@ return new class extends Migration
             $table->boolean('is_active')->default(true);
 
             $table->timestamps();
+            $table->softDeletes();
 
             // Foreign keys
             $table->foreign('category_id')->references('id')->on('categories')->nullOnDelete();

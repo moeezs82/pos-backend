@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BranchController;
 use App\Http\Controllers\Api\V1\BrandController;
 use App\Http\Controllers\Api\V1\CategoryController;
+use App\Http\Controllers\Api\V1\CustomerController;
 use App\Http\Controllers\Api\V1\ProductController;
 use App\Http\Controllers\Api\V1\StockController;
 use Illuminate\Http\Request;
@@ -34,7 +35,7 @@ Route::prefix('v1')->group(function () {
         Route::delete('/branches/{id}', [BranchController::class, 'destroy'])
             ->middleware('permission:manage-branches');
 
-            
+
         // Categories
         Route::get('/categories', [CategoryController::class, 'index'])
             ->middleware('permission:view-categories');
@@ -72,6 +73,15 @@ Route::prefix('v1')->group(function () {
             Route::get('/{id}', [ProductController::class, 'show'])->middleware('permission:view-products');
             Route::put('/{id}', [ProductController::class, 'update'])->middleware('permission:manage-products');
             Route::delete('/{id}', [ProductController::class, 'destroy'])->middleware('permission:manage-products');
+        });
+
+
+        Route::prefix('customers')->group(function () {
+            Route::get('/', [CustomerController::class, 'index'])->middleware('permission:view-customers');
+            Route::post('/', [CustomerController::class, 'store'])->middleware('permission:view-customers');
+            Route::get('/{customer}', [CustomerController::class, 'show'])->middleware('permission:view-customers');
+            Route::put('/{customer}', [CustomerController::class, 'update'])->middleware('permission:view-customers');
+            Route::delete('/{customer}', [CustomerController::class, 'destroy'])->middleware('permission:view-customers');
         });
     });
 });
