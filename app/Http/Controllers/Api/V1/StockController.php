@@ -7,6 +7,7 @@ use App\Http\Response\ApiResponse;
 use App\Models\ProductStock;
 use App\Models\StockMovement;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class StockController extends Controller
 {
@@ -23,8 +24,8 @@ class StockController extends Controller
             $query->where('product_id', $request->product_id);
         }
 
-        $data['stocks'] = $query->paginate($request->get('per_page', 20));
-        return ApiResponse::success($data, 'Stocks retrived successfully');
+        $stocks = $query->paginate($request->get('per_page', 20));
+        return ApiResponse::success($stocks, 'Stocks retrived successfully');
     }
 
     // Adjust stock (increase/decrease manually)
@@ -53,8 +54,7 @@ class StockController extends Controller
             'reference'  => $data['reason'] ?? 'manual-adjustment'
         ]);
 
-        $data['stock'] = $stock;
-        return ApiResponse::success($data, 'Stock adjusted successfully');
+        return ApiResponse::success($stock, 'Stock adjusted successfully');
     }
 
     // Transfer stock between branches
@@ -65,42 +65,60 @@ class StockController extends Controller
             'from_branch'  => 'required|exists:branches,id',
             'to_branch'    => 'required|exists:branches,id|different:from_branch',
             'quantity'     => 'required|integer|min:1',
+            'reference'    => 'nullable|string', // e.g., transfer voucher number
         ]);
 
-        // Decrease from source
-        $from = ProductStock::where('product_id', $data['product_id'])
-            ->where('branch_id', $data['from_branch'])->firstOrFail();
+        DB::beginTransaction();
 
-        if ($from->quantity < $data['quantity']) {
-            return response()->json(['message' => 'Not enough stock to transfer'], 422);
+        try {
+            // 🔹 Lock source stock row to avoid race conditions
+            $from = ProductStock::where('product_id', $data['product_id'])
+                ->where('branch_id', $data['from_branch'])
+                ->lockForUpdate()
+                ->first();
+
+            if (!$from || $from->quantity < $data['quantity']) {
+                DB::rollBack();
+                return response()->json(['message' => 'Not enough stock to transfer'], 422);
+            }
+
+            // Decrease from source
+            $from->decrement('quantity', $data['quantity']);
+
+            StockMovement::create([
+                'product_id' => $data['product_id'],
+                'branch_id'  => $data['from_branch'],
+                'type'       => 'transfer_out',
+                'quantity'   => -$data['quantity'],
+                'reference'  => $data['reference'] ?? 'transfer-to-' . $data['to_branch'],
+            ]);
+
+            // Increase in destination
+            $to = ProductStock::firstOrCreate(
+                ['product_id' => $data['product_id'], 'branch_id' => $data['to_branch']],
+                ['quantity' => 0]
+            );
+            $to->increment('quantity', $data['quantity']);
+
+            StockMovement::create([
+                'product_id' => $data['product_id'],
+                'branch_id'  => $data['to_branch'],
+                'type'       => 'transfer_in',
+                'quantity'   => $data['quantity'],
+                'reference'  => $data['reference'] ?? 'transfer-from-' . $data['from_branch'],
+            ]);
+
+            DB::commit();
+
+            return ApiResponse::success([
+                'from_branch' => $from->branch->name ?? null,
+                'to_branch'   => $to->branch->name ?? null,
+                'product_id'  => $data['product_id'],
+                'quantity'    => $data['quantity'],
+            ], 'Stock transferred successfully');
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json(['message' => 'Transfer failed', 'error' => $e->getMessage()], 500);
         }
-        $from->quantity -= $data['quantity'];
-        $from->save();
-
-        StockMovement::create([
-            'product_id' => $data['product_id'],
-            'branch_id'  => $data['from_branch'],
-            'type'       => 'transfer-out',
-            'quantity'   => -$data['quantity'],
-            'reference'  => 'transfer-to-' . $data['to_branch']
-        ]);
-
-        // Increase in destination
-        $to = ProductStock::firstOrCreate(
-            ['product_id' => $data['product_id'], 'branch_id' => $data['to_branch']],
-            ['quantity' => 0]
-        );
-        $to->quantity += $data['quantity'];
-        $to->save();
-
-        StockMovement::create([
-            'product_id' => $data['product_id'],
-            'branch_id'  => $data['to_branch'],
-            'type'       => 'transfer-in',
-            'quantity'   => $data['quantity'],
-            'reference'  => 'transfer-from-' . $data['from_branch']
-        ]);
-
-        return ApiResponse::success(null);
     }
 }

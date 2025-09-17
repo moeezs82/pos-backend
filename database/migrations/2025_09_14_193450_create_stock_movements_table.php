@@ -15,7 +15,7 @@ return new class extends Migration
             $table->id();
             $table->unsignedBigInteger('product_id');
             $table->unsignedBigInteger('branch_id');
-            $table->enum('type', ['purchase', 'sale', 'return', 'adjustment']);
+            $table->enum('type', ['purchase', 'sale', 'return', 'adjustment', 'transfer_in', 'transfer_out']);
             $table->integer('quantity'); // positive for in, negative for out
             $table->string('reference')->nullable(); // e.g., Sale ID, Purchase Order ID
             $table->timestamps();
