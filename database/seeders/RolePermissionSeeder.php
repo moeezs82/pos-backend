@@ -16,8 +16,6 @@ class RolePermissionSeeder extends Seeder
     {
         // Define permissions
         $permissions = [
-            'create-sale',
-            'refund-sale',
             'manage-stock',
             'view-reports',
             'manage-users',
@@ -32,17 +30,14 @@ class RolePermissionSeeder extends Seeder
             'manage-categories',
             'view-brands',
             'manage-brands',
-            'view-stock',
             'adjust-stock',
-            'create-sale',
+            'manage-sales',
             'refund-sale',
             'view-sales',
             'view-reports',
             'manage-users',
             'view-branches',
             'manage-branches',
-            'view-stock',
-            'adjust-stock'
         ];
 
         foreach ($permissions as $perm) {

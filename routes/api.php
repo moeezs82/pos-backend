@@ -5,7 +5,9 @@ use App\Http\Controllers\Api\V1\BranchController;
 use App\Http\Controllers\Api\V1\BrandController;
 use App\Http\Controllers\Api\V1\CategoryController;
 use App\Http\Controllers\Api\V1\CustomerController;
+use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\ProductController;
+use App\Http\Controllers\Api\V1\SaleController;
 use App\Http\Controllers\Api\V1\StockController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -71,6 +73,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/', [ProductController::class, 'index'])->middleware('permission:view-products');
             Route::post('/', [ProductController::class, 'store'])->middleware('permission:manage-products');
             Route::get('/{id}', [ProductController::class, 'show'])->middleware('permission:view-products');
+            Route::get('/by-barcode/{code}', [ProductController::class, 'findByBarcode'])->middleware('permission:view-products');
             Route::put('/{id}', [ProductController::class, 'update'])->middleware('permission:manage-products');
             Route::delete('/{id}', [ProductController::class, 'destroy'])->middleware('permission:manage-products');
         });
@@ -82,6 +85,13 @@ Route::prefix('v1')->group(function () {
             Route::get('/{customer}', [CustomerController::class, 'show'])->middleware('permission:view-customers');
             Route::put('/{customer}', [CustomerController::class, 'update'])->middleware('permission:view-customers');
             Route::delete('/{customer}', [CustomerController::class, 'destroy'])->middleware('permission:view-customers');
+        });
+
+        Route::prefix('sales')->group(function () {
+            Route::get('/', [SaleController::class, 'index'])->middleware('permission:view-sales');        
+            Route::get('/{id}', [SaleController::class, 'show'])->middleware('permission:view-sales');     
+            Route::post('/', [SaleController::class, 'store'])->middleware('permission:manage-sales');       
+            Route::post('/{sale}/payments', [PaymentController::class, 'store'])->middleware('permission:manage-sales'); 
         });
     });
 });

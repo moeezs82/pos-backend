@@ -114,6 +114,14 @@ class ProductController extends Controller
         $data['product'] = Product::with(['category', 'brand', 'stocks.branch'])->findOrFail($id);
         return ApiResponse::success($data, 'Product retrived successfully');
     }
+    public function findByBarcode($code)
+    {
+        $product = Product::where('barcode', $code)->first();
+        if (!$product) {
+            return ApiResponse::error("Product not found", 404);
+        }
+        return ApiResponse::success($product, 'Product retrived successfully');
+    }
 
     // Update product
     public function update(Request $request, $id)
