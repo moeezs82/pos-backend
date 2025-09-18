@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
+use App\Models\Product;
 use App\Models\Sale;
 use App\Models\StockMovement;
 use Illuminate\Http\Request;
@@ -16,7 +17,7 @@ class SaleController extends Controller
     public function index(Request $request)
     {
         $query = Sale::with(['customer', 'branch'])
-        ->withSum('payments as paid_amount', 'amount');
+            ->withSum('payments as paid_amount', 'amount');
 
         if ($request->has('branch_id')) {
             $query->where('branch_id', $request->branch_id);
@@ -54,7 +55,7 @@ class SaleController extends Controller
         return ApiResponse::success($sale);
     }
 
-    // Create new sale
+
     public function store(Request $request)
     {
         $data = $request->validate([
@@ -69,14 +70,22 @@ class SaleController extends Controller
             'payments'    => 'array'
         ]);
 
-        return DB::transaction(function () use ($data) {
+        $branchId = $data['branch_id'];
+
+        // ✅ Validate stock with helper
+        $validation = $this->validateStock($branchId, $data['items']);
+        if (!$validation['ok']) {
+            return ApiResponse::error($validation['message'], 422);
+        }
+
+        return DB::transaction(function () use ($data, $branchId) {
             $subtotal = collect($data['items'])->sum(fn($i) => $i['quantity'] * $i['price']);
             $total = $subtotal - ($data['discount'] ?? 0) + ($data['tax'] ?? 0);
 
             $sale = Sale::create([
-                'invoice_no' => 'INV-' . Str::upper(Str::random(8)),
+                'invoice_no' => 'INV-' . time(),
                 'customer_id' => $data['customer_id'] ?? null,
-                'branch_id'  => $data['branch_id'],
+                'branch_id'  => $branchId,
                 'subtotal'   => $subtotal,
                 'discount'   => $data['discount'] ?? 0,
                 'tax'        => $data['tax'] ?? 0,
@@ -92,16 +101,20 @@ class SaleController extends Controller
                 ]);
 
                 // Deduct stock
+                DB::table('product_stocks')
+                    ->where('product_id', $item['product_id'])
+                    ->where('branch_id', $branchId)
+                    ->decrement('quantity', $item['quantity']);
+
                 StockMovement::create([
                     'product_id' => $item['product_id'],
-                    'branch_id'  => $data['branch_id'],
+                    'branch_id'  => $branchId,
                     'type'       => 'sale',
                     'quantity'   => -$item['quantity'],
                     'reference'  => $sale->invoice_no,
                 ]);
             }
 
-            // Add initial payments if given
             if (!empty($data['payments'])) {
                 foreach ($data['payments'] as $payment) {
                     $sale->payments()->create($payment);
@@ -125,5 +138,42 @@ class SaleController extends Controller
         } else {
             $sale->update(['status' => 'pending']);
         }
+    }
+
+    protected function validateStock(int $branchId, array $items): array
+    {
+        $productIds = collect($items)->pluck('product_id');
+
+        // Fetch stock quantities for this branch
+        $stocks = DB::table('product_stocks')
+            ->where('branch_id', $branchId)
+            ->whereIn('product_id', $productIds)
+            ->pluck('quantity', 'product_id'); // product_id => quantity
+
+        // Fetch product names once
+        $products = Product::whereIn('id', $productIds)
+            ->pluck('name', 'id'); // product_id => name
+
+        foreach ($items as $item) {
+            $productId = $item['product_id'];
+            $requiredQty = $item['quantity'];
+            $available = $stocks[$productId] ?? null;
+
+            if ($available === null) {
+                return [
+                    'ok' => false,
+                    'message' => "No stock record found for " . ($products[$productId] ?? "Product #$productId") . " at branch $branchId"
+                ];
+            }
+
+            if ($available < $requiredQty) {
+                return [
+                    'ok' => false,
+                    'message' => "Insufficient stock for " . ($products[$productId] ?? "Product #$productId") . " (Available: $available, Requested: $requiredQty)"
+                ];
+            }
+        }
+
+        return ['ok' => true, 'message' => null];
     }
 }

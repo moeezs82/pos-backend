@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\V1\CustomerController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\ProductController;
 use App\Http\Controllers\Api\V1\SaleController;
+use App\Http\Controllers\Api\V1\SaleReturnController;
 use App\Http\Controllers\Api\V1\StockController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -88,10 +89,20 @@ Route::prefix('v1')->group(function () {
         });
 
         Route::prefix('sales')->group(function () {
-            Route::get('/', [SaleController::class, 'index'])->middleware('permission:view-sales');        
-            Route::get('/{id}', [SaleController::class, 'show'])->middleware('permission:view-sales');     
-            Route::post('/', [SaleController::class, 'store'])->middleware('permission:manage-sales');       
-            Route::post('/{sale}/payments', [PaymentController::class, 'store'])->middleware('permission:manage-sales'); 
+            // --- Returns ---
+            Route::prefix('returns')->middleware('permission:manage-sales')->group(function () {
+                Route::get('/', [SaleReturnController::class, 'index']); 
+                Route::get('/{id}', [SaleReturnController::class, 'show']); 
+                Route::post('/', [SaleReturnController::class, 'store']);
+                Route::post('/{id}/approve', [SaleReturnController::class, 'approve']);
+            });
+
+            
+            Route::get('/', [SaleController::class, 'index'])->middleware('permission:view-sales');
+            Route::post('/', [SaleController::class, 'store'])->middleware('permission:manage-sales');
+            Route::get('/{id}', [SaleController::class, 'show'])->middleware('permission:view-sales');
+            Route::post('/{sale}/payments', [PaymentController::class, 'store'])->middleware('permission:manage-sales');
+
         });
     });
 });
