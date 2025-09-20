@@ -103,9 +103,7 @@ class ProductController extends Controller
             }
         }
 
-        $data['product'] = $product->load('category', 'brand', 'stocks');
-
-        return ApiResponse::success($data, 'Product created successfully', 201);
+        return ApiResponse::success($product->load('category', 'brand', 'stocks'), 'Product created successfully', 201);
     }
 
     // Show product

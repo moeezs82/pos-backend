@@ -7,9 +7,11 @@ use App\Http\Controllers\Api\V1\CategoryController;
 use App\Http\Controllers\Api\V1\CustomerController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\ProductController;
+use App\Http\Controllers\Api\V1\PurchaseController;
 use App\Http\Controllers\Api\V1\SaleController;
 use App\Http\Controllers\Api\V1\SaleReturnController;
 use App\Http\Controllers\Api\V1\StockController;
+use App\Http\Controllers\Api\V1\VendorController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -87,22 +89,37 @@ Route::prefix('v1')->group(function () {
             Route::put('/{customer}', [CustomerController::class, 'update'])->middleware('permission:view-customers');
             Route::delete('/{customer}', [CustomerController::class, 'destroy'])->middleware('permission:view-customers');
         });
+        Route::prefix('vendors')->group(function () {
+            Route::get('/', [VendorController::class, 'index'])->middleware('permission:view-vendors');
+            Route::post('/', [VendorController::class, 'store'])->middleware('permission:manage-vendors');
+            Route::get('/{vendor}', [VendorController::class, 'show'])->middleware('permission:view-vendors');
+            Route::put('/{vendor}', [VendorController::class, 'update'])->middleware('permission:manage-vendors');
+            Route::delete('/{vendor}', [VendorController::class, 'destroy'])->middleware('permission:manage-vendors');
+        });
 
         Route::prefix('sales')->group(function () {
             // --- Returns ---
             Route::prefix('returns')->middleware('permission:manage-sales')->group(function () {
-                Route::get('/', [SaleReturnController::class, 'index']); 
-                Route::get('/{id}', [SaleReturnController::class, 'show']); 
+                Route::get('/', [SaleReturnController::class, 'index']);
+                Route::get('/{id}', [SaleReturnController::class, 'show']);
                 Route::post('/', [SaleReturnController::class, 'store']);
                 Route::post('/{id}/approve', [SaleReturnController::class, 'approve']);
             });
 
-            
+
             Route::get('/', [SaleController::class, 'index'])->middleware('permission:view-sales');
             Route::post('/', [SaleController::class, 'store'])->middleware('permission:manage-sales');
             Route::get('/{id}', [SaleController::class, 'show'])->middleware('permission:view-sales');
             Route::post('/{sale}/payments', [PaymentController::class, 'store'])->middleware('permission:manage-sales');
+        });
 
+        Route::prefix('purchases')->group(function () {
+            Route::get('/',                [PurchaseController::class, 'index'])->middleware('permission:view-purchases');
+            Route::get('/{purchase}',      [PurchaseController::class, 'show'])->middleware('permission:view-purchases');
+            Route::post('/',               [PurchaseController::class, 'store'])->middleware('permission:manage-purchases');
+            Route::post('/{purchase}/receive',  [PurchaseController::class, 'receive'])->middleware('permission:manage-purchases');
+            Route::post('/{purchase}/payments', [PurchaseController::class, 'addPayment'])->middleware('permission:manage-purchases');
+            Route::post('/{purchase}/cancel',   [PurchaseController::class, 'cancel'])->middleware('permission:manage-purchases');
         });
     });
 });

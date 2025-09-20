@@ -22,6 +22,9 @@ class SaleController extends Controller
         if ($request->has('branch_id')) {
             $query->where('branch_id', $request->branch_id);
         }
+        if ($request->filled('customer_id')) {
+            $query->where('customer_id', $request->customer_id);
+        }
 
         if ($request->has('search')) {
             $search = $request->search;
@@ -73,10 +76,10 @@ class SaleController extends Controller
         $branchId = $data['branch_id'];
 
         // ✅ Validate stock with helper
-        $validation = $this->validateStock($branchId, $data['items']);
-        if (!$validation['ok']) {
-            return ApiResponse::error($validation['message'], 422);
-        }
+        // $validation = $this->validateStock($branchId, $data['items']);
+        // if (!$validation['ok']) {
+        //     return ApiResponse::error($validation['message'], 422);
+        // }
 
         return DB::transaction(function () use ($data, $branchId) {
             $subtotal = collect($data['items'])->sum(fn($i) => $i['quantity'] * $i['price']);
