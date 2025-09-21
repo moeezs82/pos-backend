@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\V1\CategoryController;
 use App\Http\Controllers\Api\V1\CustomerController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\ProductController;
+use App\Http\Controllers\Api\V1\PurchaseClaimController;
 use App\Http\Controllers\Api\V1\PurchaseController;
 use App\Http\Controllers\Api\V1\SaleController;
 use App\Http\Controllers\Api\V1\SaleReturnController;
@@ -120,6 +121,14 @@ Route::prefix('v1')->group(function () {
             Route::post('/{purchase}/receive',  [PurchaseController::class, 'receive'])->middleware('permission:manage-purchases');
             Route::post('/{purchase}/payments', [PurchaseController::class, 'addPayment'])->middleware('permission:manage-purchases');
             Route::post('/{purchase}/cancel',   [PurchaseController::class, 'cancel'])->middleware('permission:manage-purchases');
+        });
+        Route::prefix('purchase-claims')->group(function () {
+            Route::get('/',        [PurchaseClaimController::class, 'index'])->middleware('permission:manage-purchases');
+            Route::get('/{id}',    [PurchaseClaimController::class, 'show'])->middleware('permission:manage-purchases');
+            Route::post('/',       [PurchaseClaimController::class, 'store'])->middleware('permission:manage-purchases');
+            Route::post('/{id}/approve', [PurchaseClaimController::class, 'approve'])->middleware('permission:manage-purchases');
+            Route::post('/{id}/reject',  [PurchaseClaimController::class, 'reject'])->middleware('permission:manage-purchases');
+            Route::post('/{id}/close',   [PurchaseClaimController::class, 'close'])->middleware('permission:manage-purchases');
         });
     });
 });

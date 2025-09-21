@@ -14,7 +14,7 @@ class PurchaseController extends Controller
     // List all purchases
     public function index(Request $request)
     {
-        $query = Purchase::with(['vendor','branch'])
+        $query = Purchase::with(['vendor', 'branch'])
             ->withSum('payments as paid_amount', 'amount');
 
         if ($request->filled('branch_id')) {
@@ -27,17 +27,18 @@ class PurchaseController extends Controller
             $search = $request->search;
             $query->where(function ($q) use ($search) {
                 $q->where('invoice_no', 'like', "%$search%")
-                  ->orWhereHas('vendor', function ($v) use ($search) {
-                      $v->where('name', 'like', "%$search%")
-                        ->orWhere('email', 'like', "%$search%")
-                        ->orWhere('phone', 'like', "%$search%");
-                  });
+                    ->orWhereHas('vendor', function ($v) use ($search) {
+                        $v->where('first_name', 'like', "%$search%")
+                            ->where('last_name', 'like', "%$search%")
+                            ->orWhere('email', 'like', "%$search%")
+                            ->orWhere('phone', 'like', "%$search%");
+                    });
             });
         }
 
         $request->sort_by === 'total'
-            ? $query->orderBy('total','desc')
-            : $query->orderBy('created_at','desc');
+            ? $query->orderBy('total', 'desc')
+            : $query->orderBy('created_at', 'desc');
 
         $purchases = $query->paginate($request->get('per_page', 15));
 
@@ -47,7 +48,7 @@ class PurchaseController extends Controller
     // Single purchase
     public function show(Purchase $purchase)
     {
-        $purchase->load(['vendor','branch','items.product','payments']);
+        $purchase->load(['vendor', 'branch', 'items.product', 'payments']);
         return ApiResponse::success($purchase);
     }
 
@@ -71,7 +72,7 @@ class PurchaseController extends Controller
             'payments.*.method' => 'nullable|string',
             'payments.*.amount' => 'required_with:payments|numeric|min:0.01',
             'payments.*.tx_ref' => 'nullable|string',
-            'payments.*.paid_at'=> 'nullable|date',
+            'payments.*.paid_at' => 'nullable|date',
             'payments.*.meta'   => 'nullable|array',
         ]);
 
@@ -91,7 +92,7 @@ class PurchaseController extends Controller
                 'tax'           => $data['tax'] ?? 0,
                 'total'         => $total,
                 'status'        => 'pending',   // payment status
-                'receive_status'=> $receiveNow ? 'partial' : 'ordered',
+                'receive_status' => $receiveNow ? 'partial' : 'ordered',
                 'expected_at'   => $data['expected_at'] ?? null,
                 'notes'         => $data['notes'] ?? null,
             ]);
@@ -100,7 +101,7 @@ class PurchaseController extends Controller
                 $row = $purchase->items()->create([
                     'product_id'  => $item['product_id'],
                     'quantity'    => $item['quantity'],
-                    'received_qty'=> 0,
+                    'received_qty' => 0,
                     'price'       => $item['price'],
                     'total'       => $item['quantity'] * $item['price'],
                 ]);
@@ -134,7 +135,7 @@ class PurchaseController extends Controller
             $this->updatePaymentStatus($purchase);
             $this->updateReceiveStatus($purchase);
 
-            return ApiResponse::success($purchase->load('items.product','payments'));
+            return ApiResponse::success($purchase->load('items.product', 'payments'));
         });
     }
 
@@ -144,9 +145,9 @@ class PurchaseController extends Controller
         $data = $request->validate([
             'items' => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
-            'items.*.receive_qty'=> 'required|integer|min:1',
+            'items.*.receive_qty' => 'required|integer|min:1',
             'reference' => 'nullable|string', // GRN
-            'received_at'=> 'nullable|date',
+            'received_at' => 'nullable|date',
         ]);
 
         if ($purchase->receive_status === 'cancelled') {
@@ -207,7 +208,7 @@ class PurchaseController extends Controller
             'method' => 'nullable|string',
             'amount' => 'required|numeric|min:0.01',
             'tx_ref' => 'nullable|string',
-            'paid_at'=> 'nullable|date',
+            'paid_at' => 'nullable|date',
             'meta'   => 'nullable|array',
         ]);
 
@@ -234,7 +235,7 @@ class PurchaseController extends Controller
 
     protected function generateNumber(string $prefix): string
     {
-        return $prefix.'-'.time();
+        return $prefix . '-' . time();
     }
 
     protected function updatePaymentStatus(Purchase $purchase): void
