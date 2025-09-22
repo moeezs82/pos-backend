@@ -211,6 +211,7 @@ class PurchaseController extends Controller
             'paid_at' => 'nullable|date',
             'meta'   => 'nullable|array',
         ]);
+        $data['paid_at'] = $data['paid_at'] ?? now(); // Carbon instance
 
         return DB::transaction(function () use ($purchase, $data) {
             $purchase->payments()->create($data);

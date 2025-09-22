@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BranchController;
 use App\Http\Controllers\Api\V1\BrandController;
+use App\Http\Controllers\Api\V1\CashBookController;
 use App\Http\Controllers\Api\V1\CategoryController;
 use App\Http\Controllers\Api\V1\CustomerController;
 use App\Http\Controllers\Api\V1\PaymentController;
@@ -130,5 +131,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/{id}/reject',  [PurchaseClaimController::class, 'reject'])->middleware('permission:manage-purchases');
             Route::post('/{id}/close',   [PurchaseClaimController::class, 'close'])->middleware('permission:manage-purchases');
         });
+        Route::get('cashbook', [CashBookController::class, 'index'])->middleware('permission:view-cashbook');
+        Route::post('cashbook/expense', [CashBookController::class, 'storeExpense'])->middleware('permission:manage-cashbook');
     });
 });

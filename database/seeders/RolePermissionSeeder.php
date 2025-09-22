@@ -42,6 +42,8 @@ class RolePermissionSeeder extends Seeder
             'manage-users',
             'view-branches',
             'manage-branches',
+            'view-cashbook',
+            'manage-cashbook',
         ];
 
         foreach ($permissions as $perm) {
@@ -57,7 +59,6 @@ class RolePermissionSeeder extends Seeder
         $admin->givePermissionTo(Permission::all());
 
         $manager->givePermissionTo([
-            'create-sale',
             'refund-sale',
             'view-sales',
             'manage-products',
