@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\V1\ProductController;
 use App\Http\Controllers\Api\V1\PurchaseClaimController;
 use App\Http\Controllers\Api\V1\PurchaseController;
 use App\Http\Controllers\Api\V1\SaleController;
+use App\Http\Controllers\Api\V1\SaleItemController;
 use App\Http\Controllers\Api\V1\SaleReturnController;
 use App\Http\Controllers\Api\V1\StockController;
 use App\Http\Controllers\Api\V1\VendorController;
@@ -112,17 +113,37 @@ Route::prefix('v1')->group(function () {
             Route::get('/', [SaleController::class, 'index'])->middleware('permission:view-sales');
             Route::post('/', [SaleController::class, 'store'])->middleware('permission:manage-sales');
             Route::get('/{id}', [SaleController::class, 'show'])->middleware('permission:view-sales');
-            Route::post('/{sale}/payments', [PaymentController::class, 'store'])->middleware('permission:manage-sales');
+            Route::prefix('{sale}')->middleware('permission:manage-sales')->group(function () {
+                Route::post('payments', [PaymentController::class, 'store']);
+                Route::put('payments/{payment}', [PaymentController::class, 'update']);
+                Route::delete('payments/{payment}', [PaymentController::class, 'destroy']);
+
+                // Items
+                Route::post('items', [SaleItemController::class, 'store']);               // ADD item
+                Route::put('items/{item}', [SaleItemController::class, 'update']);        // EDIT item
+                Route::delete('items/{item}', [SaleItemController::class, 'destroy']);    // DELETE item
+            });
         });
 
         Route::prefix('purchases')->group(function () {
-            Route::get('/',                [PurchaseController::class, 'index'])->middleware('permission:view-purchases');
-            Route::get('/{purchase}',      [PurchaseController::class, 'show'])->middleware('permission:view-purchases');
-            Route::post('/',               [PurchaseController::class, 'store'])->middleware('permission:manage-purchases');
-            Route::post('/{purchase}/receive',  [PurchaseController::class, 'receive'])->middleware('permission:manage-purchases');
-            Route::post('/{purchase}/payments', [PurchaseController::class, 'addPayment'])->middleware('permission:manage-purchases');
-            Route::post('/{purchase}/cancel',   [PurchaseController::class, 'cancel'])->middleware('permission:manage-purchases');
+            Route::get('/',                    [PurchaseController::class, 'index'])->middleware('permission:view-purchases');
+            Route::get('/{purchase}',          [PurchaseController::class, 'show'])->middleware('permission:view-purchases');
+            Route::post('/',                   [PurchaseController::class, 'store'])->middleware('permission:manage-purchases');
+
+            // Receiving & payments
+            Route::post('/{purchase}/receive',     [PurchaseController::class, 'receive'])->middleware('permission:manage-purchases');
+            Route::post('/{purchase}/payments',    [PurchaseController::class, 'addPayment'])->middleware('permission:manage-purchases');
+            Route::put('/{purchase}/payments/{payment}', [PurchaseController::class, 'updatePayment'])->middleware('permission:manage-purchases');
+            Route::delete('/{purchase}/payments/{payment}', [PurchaseController::class, 'deletePayment'])->middleware('permission:manage-purchases');
+
+            // Items (line management)
+            Route::post('/{purchase}/items',       [PurchaseController::class, 'addItem'])->middleware('permission:manage-purchases');
+            Route::put('/{purchase}/items/{item}', [PurchaseController::class, 'updateItem'])->middleware('permission:manage-purchases');
+            Route::delete('/{purchase}/items/{item}', [PurchaseController::class, 'deleteItem'])->middleware('permission:manage-purchases');
+
+            Route::post('/{purchase}/cancel',      [PurchaseController::class, 'cancel'])->middleware('permission:manage-purchases');
         });
+
         Route::prefix('purchase-claims')->group(function () {
             Route::get('/',        [PurchaseClaimController::class, 'index'])->middleware('permission:manage-purchases');
             Route::get('/{id}',    [PurchaseClaimController::class, 'show'])->middleware('permission:manage-purchases');

@@ -11,7 +11,8 @@ use Illuminate\Support\Facades\DB;
 
 class PurchaseController extends Controller
 {
-    // List all purchases
+    /* ===================== Listing / Show ===================== */
+
     public function index(Request $request)
     {
         $query = Purchase::with(['vendor', 'branch'])
@@ -45,14 +46,14 @@ class PurchaseController extends Controller
         return ApiResponse::success($purchases);
     }
 
-    // Single purchase
     public function show(Purchase $purchase)
     {
         $purchase->load(['vendor', 'branch', 'items.product', 'payments']);
         return ApiResponse::success($purchase);
     }
 
-    // Create PO (optionally receive now)
+    /* ===================== Create PO ===================== */
+
     public function store(Request $request)
     {
         $data = $request->validate([
@@ -76,7 +77,7 @@ class PurchaseController extends Controller
             'payments.*.meta'   => 'nullable|array',
         ]);
 
-        $branchId = (int) $data['branch_id'];
+        $branchId   = (int) $data['branch_id'];
         $receiveNow = (bool) ($data['receive_now'] ?? false);
 
         return DB::transaction(function () use ($data, $branchId, $receiveNow) {
@@ -84,26 +85,26 @@ class PurchaseController extends Controller
             $total    = $subtotal - ($data['discount'] ?? 0) + ($data['tax'] ?? 0);
 
             $purchase = Purchase::create([
-                'invoice_no'    => $this->generateNumber('PUR'),
-                'vendor_id'     => $data['vendor_id'],
-                'branch_id'     => $branchId,
-                'subtotal'      => $subtotal,
-                'discount'      => $data['discount'] ?? 0,
-                'tax'           => $data['tax'] ?? 0,
-                'total'         => $total,
-                'status'        => 'pending',   // payment status
+                'invoice_no'     => $this->generateNumber('PUR'),
+                'vendor_id'      => $data['vendor_id'],
+                'branch_id'      => $branchId,
+                'subtotal'       => $subtotal,
+                'discount'       => $data['discount'] ?? 0,
+                'tax'            => $data['tax'] ?? 0,
+                'total'          => $total,
+                'status'         => 'pending',   // payment status
                 'receive_status' => $receiveNow ? 'partial' : 'ordered',
-                'expected_at'   => $data['expected_at'] ?? null,
-                'notes'         => $data['notes'] ?? null,
+                'expected_at'    => $data['expected_at'] ?? null,
+                'notes'          => $data['notes'] ?? null,
             ]);
 
             foreach ($data['items'] as $item) {
                 $row = $purchase->items()->create([
-                    'product_id'  => $item['product_id'],
-                    'quantity'    => $item['quantity'],
+                    'product_id'   => $item['product_id'],
+                    'quantity'     => (int)$item['quantity'],
                     'received_qty' => 0,
-                    'price'       => $item['price'],
-                    'total'       => $item['quantity'] * $item['price'],
+                    'price'        => (float)$item['price'],
+                    'total'        => (int)$item['quantity'] * (float)$item['price'],
                 ]);
 
                 if ($receiveNow) {
@@ -132,14 +133,14 @@ class PurchaseController extends Controller
                 }
             }
 
-            $this->updatePaymentStatus($purchase);
-            $this->updateReceiveStatus($purchase);
+            $this->recalculatePurchase($purchase->fresh());
 
-            return ApiResponse::success($purchase->load('items.product', 'payments'));
+            return ApiResponse::success(['purchase' => $purchase], 'Purchase created successfully');
         });
     }
 
-    // Receive goods (partial allowed)
+    /* ===================== Receive (Partial Allowed) ===================== */
+
     public function receive(Request $request, Purchase $purchase)
     {
         $data = $request->validate([
@@ -158,14 +159,12 @@ class PurchaseController extends Controller
             $branchId  = $purchase->branch_id;
             $grnNumber = $data['reference'] ?? $this->generateNumber('GRN');
 
-            // Map items by product_id for quick access
             $itemsMap = $purchase->items()->get()->keyBy('product_id');
 
             foreach ($data['items'] as $in) {
                 $productId = (int) $in['product_id'];
                 $receive   = (int) $in['receive_qty'];
 
-                /** @var PurchaseItem|null $pi */
                 $pi = $itemsMap->get($productId);
                 if (!$pi) {
                     return ApiResponse::error("Product $productId is not part of this purchase.", 422);
@@ -179,13 +178,9 @@ class PurchaseController extends Controller
                     return ApiResponse::error("Receive qty ($receive) exceeds remaining ($remaining) for product {$productId}.", 422);
                 }
 
-                // Increase stock
                 $this->incrementStock($productId, $branchId, $receive);
-
-                // Update item received qty
                 $pi->increment('received_qty', $receive);
 
-                // Movement
                 StockMovement::create([
                     'product_id' => $productId,
                     'branch_id'  => $branchId,
@@ -197,11 +192,12 @@ class PurchaseController extends Controller
 
             $this->updateReceiveStatus($purchase->fresh('items'));
 
-            return ApiResponse::success($purchase->load('items.product'));
+            return ApiResponse::success(['purchase'=>$purchase]);
         });
     }
 
-    // Add a payment
+    /* ===================== Payments: Add / Update / Delete ===================== */
+
     public function addPayment(Request $request, Purchase $purchase)
     {
         $data = $request->validate([
@@ -211,16 +207,169 @@ class PurchaseController extends Controller
             'paid_at' => 'nullable|date',
             'meta'   => 'nullable|array',
         ]);
-        $data['paid_at'] = $data['paid_at'] ?? now(); // Carbon instance
+        $data['paid_at'] = $data['paid_at'] ?? now();
 
         return DB::transaction(function () use ($purchase, $data) {
             $purchase->payments()->create($data);
-            $this->updatePaymentStatus($purchase->fresh());
-            return ApiResponse::success($purchase->load('payments'));
+            $this->recalculatePurchase($purchase->fresh());
+
+            return ApiResponse::success(['purchase' => $purchase], 'Payment added');
         });
     }
 
-    // Cancel PO (only if nothing received)
+    public function updatePayment(Request $request, Purchase $purchase, $paymentId)
+    {
+        $data = $request->validate([
+            'method' => 'sometimes|string|nullable',
+            'amount' => 'sometimes|numeric|min:0.01',
+            'tx_ref' => 'nullable|string',
+            'paid_at' => 'nullable|date',
+            'meta'   => 'nullable|array',
+        ]);
+
+        return DB::transaction(function () use ($purchase, $paymentId, $data) {
+            $payment = $purchase->payments()->findOrFail($paymentId);
+            $payment->update($data);
+
+            $this->recalculatePurchase($purchase->fresh());
+
+            return ApiResponse::success(['payment' => $payment], 'Payment updated');
+        });
+    }
+
+    public function deletePayment(Purchase $purchase, $paymentId)
+    {
+        return DB::transaction(function () use ($purchase, $paymentId) {
+            $payment = $purchase->payments()->findOrFail($paymentId);
+            $payment->delete();
+
+            $this->recalculatePurchase($purchase->fresh());
+
+            return ApiResponse::success(null, 'Payment deleted');
+        });
+    }
+
+    /* ===================== Items: Add / Update / Delete ===================== */
+
+    public function addItem(Request $request, Purchase $purchase)
+    {
+        $data = $request->validate([
+            'product_id'   => 'required|exists:products,id',
+            'quantity'     => 'required|integer|min:1',
+            'price'        => 'required|numeric|min:0',
+            'received_qty' => 'nullable|integer|min:0', // optional spot receive
+        ]);
+
+        $branchId = (int) $purchase->branch_id;
+
+        return DB::transaction(function () use ($purchase, $data, $branchId) {
+            $rcv = (int) ($data['received_qty'] ?? 0);
+            $rcv = max(0, min($rcv, (int)$data['quantity'])); // clamp
+
+            $item = $purchase->items()->create([
+                'product_id'   => $data['product_id'],
+                'quantity'     => (int)$data['quantity'],
+                'received_qty' => $rcv,
+                'price'        => (float)$data['price'],
+                'total'        => (int)$data['quantity'] * (float)$data['price'],
+            ]);
+
+            if ($rcv > 0) {
+                $this->incrementStock($data['product_id'], $branchId, +$rcv);
+                StockMovement::create([
+                    'product_id' => $data['product_id'],
+                    'branch_id'  => $branchId,
+                    'type'       => 'purchase',
+                    'quantity'   => $rcv,
+                    'reference'  => $purchase->invoice_no,
+                ]);
+            }
+
+            $this->recalculatePurchase($purchase->fresh());
+
+            return ApiResponse::success(['item' => $item], 'Item added');
+        });
+    }
+
+    public function updateItem(Request $request, Purchase $purchase, $itemId)
+    {
+        $data = $request->validate([
+            'quantity'     => 'sometimes|integer|min:1',
+            'price'        => 'sometimes|numeric|min:0',
+            'received_qty' => 'nullable|integer|min:0',
+        ]);
+
+        $branchId = (int) $purchase->branch_id;
+
+        return DB::transaction(function () use ($purchase, $itemId, $data, $branchId) {
+            $item = $purchase->items()->findOrFail($itemId);
+
+            $oldQty = (int)$item->quantity;
+            $oldRcv = (int)$item->received_qty;
+            $oldPrice = (float)$item->price;
+
+            $newQty = isset($data['quantity']) ? (int)$data['quantity'] : $oldQty;
+            $newPrice = isset($data['price']) ? (float)$data['price'] : $oldPrice;
+            $newRcv = isset($data['received_qty']) ? (int)$data['received_qty'] : $oldRcv;
+            $newRcv = max(0, min($newRcv, $newQty)); // clamp to new qty
+
+            // Update row
+            $item->update([
+                'quantity'     => $newQty,
+                'price'        => $newPrice,
+                'total'        => $newQty * $newPrice,
+                'received_qty' => $newRcv,
+            ]);
+
+            // Stock delta only from change in received_qty
+            $deltaRcv = $newRcv - $oldRcv;
+            if ($deltaRcv !== 0) {
+                $this->incrementStock($item->product_id, $branchId, +$deltaRcv);
+                StockMovement::create([
+                    'product_id' => $item->product_id,
+                    'branch_id'  => $branchId,
+                    'type'       => 'adjustment',
+                    'quantity'   => $deltaRcv, // +inbound, -outbound
+                    'reference'  => $purchase->invoice_no,
+                ]);
+            }
+
+            $this->recalculatePurchase($purchase->fresh());
+
+            return ApiResponse::success(['item' => $item->fresh()], 'Item updated');
+        });
+    }
+
+    public function deleteItem(Purchase $purchase, $itemId)
+    {
+        $branchId = (int) $purchase->branch_id;
+
+        return DB::transaction(function () use ($purchase, $itemId, $branchId) {
+            $item = $purchase->items()->findOrFail($itemId);
+
+            // Reverse any received qty
+            $received = (int)$item->received_qty;
+            if ($received > 0) {
+                $this->incrementStock($item->product_id, $branchId, -$received);
+                StockMovement::create([
+                    'product_id' => $item->product_id,
+                    'branch_id'  => $branchId,
+                    'type'       => 'adjustment',
+                    'quantity'   => -$received,
+                    'reference'  => $purchase->invoice_no,
+                ]);
+            }
+
+            $item->delete();
+
+            $this->recalculatePurchase($purchase->fresh());
+
+            return ApiResponse::success($purchase->load('items.product', 'payments'), 'Item deleted');
+        });
+    }
+
+    /* ===================== Cancel ===================== */
+
     public function cancel(Purchase $purchase)
     {
         $receivedAny = $purchase->items()->sum('received_qty') > 0;
@@ -239,10 +388,30 @@ class PurchaseController extends Controller
         return $prefix . '-' . time();
     }
 
+    protected function recalculatePurchase(Purchase $purchase): void
+    {
+        // Subtotal/Total
+        $subtotal = (float) $purchase->items()->sum(DB::raw('quantity * price'));
+        $discount = (float) ($purchase->discount ?? 0);
+        $tax      = (float) ($purchase->tax ?? 0);
+        $total    = $subtotal - $discount + $tax;
+
+        $purchase->update([
+            'subtotal' => $subtotal,
+            'total'    => $total,
+        ]);
+
+        // Payment status
+        $this->updatePaymentStatus($purchase);
+
+        // Receive status
+        $this->updateReceiveStatus($purchase->fresh('items'));
+    }
+
     protected function updatePaymentStatus(Purchase $purchase): void
     {
         $paid = (float) $purchase->payments()->sum('amount');
-        if ($paid >= (float) $purchase->total) {
+        if ($paid >= (float) $purchase->total && $purchase->total > 0) {
             $purchase->update(['status' => 'paid']);
         } elseif ($paid > 0) {
             $purchase->update(['status' => 'partial']);
@@ -273,6 +442,7 @@ class PurchaseController extends Controller
 
     /**
      * Increment product stock for a branch. Creates row if missing.
+     * Pass negative $qty to decrement (adjustment).
      */
     protected function incrementStock(int $productId, int $branchId, int $qty): void
     {

@@ -18,7 +18,7 @@ class PurchasePaymentObserver
             app(CashSyncService::class)->resync($pp->cashTransaction, [
                 'amount'   => $pp->amount,
                 'method'   => $pp->method ?: 'cash',
-                'txn_date' => optional($pp->paid_at)->toDateString(),
+                'txn_date' => optional($pp->paid_at)->toDateString() ?? now()->toDateString(),
                 'reference'=> $pp->tx_ref,
             ]);
         }
