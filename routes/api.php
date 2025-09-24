@@ -152,7 +152,10 @@ Route::prefix('v1')->group(function () {
             Route::post('/{id}/reject',  [PurchaseClaimController::class, 'reject'])->middleware('permission:manage-purchases');
             Route::post('/{id}/close',   [PurchaseClaimController::class, 'close'])->middleware('permission:manage-purchases');
         });
-        Route::get('cashbook', [CashBookController::class, 'index'])->middleware('permission:view-cashbook');
-        Route::post('cashbook/expense', [CashBookController::class, 'storeExpense'])->middleware('permission:manage-cashbook');
+        Route::prefix('cashbook')->group(function() {
+            Route::get('/', [CashBookController::class, 'index'])->middleware('permission:view-cashbook');
+            Route::get('/daily-summary', [CashBookController::class, 'dailySummary'])->middleware('permission:view-cashbook');
+            Route::post('/expense', [CashBookController::class, 'storeExpense'])->middleware('permission:manage-cashbook');
+        });
     });
 });

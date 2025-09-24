@@ -14,6 +14,7 @@ class Product extends Model
         'barcode',
         'name',
         'description',
+        'vendor_id',
         'category_id',
         'brand_id',
         'price',

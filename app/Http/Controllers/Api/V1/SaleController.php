@@ -63,6 +63,7 @@ class SaleController extends Controller
     {
         $data = $request->validate([
             'customer_id' => 'nullable|exists:customers,id',
+            'vendor_id' => 'nullable|exists:vendors,id',
             'branch_id'   => 'required|exists:branches,id',
             'items'       => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',

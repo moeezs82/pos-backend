@@ -24,6 +24,14 @@ class ProductController extends Controller
             });
         }
 
+        // 📂 Filter by vendor
+        if ($request->filled('vendor_id')) {
+            $query->where(function ($query) use ($request) {
+                $query->where('vendor_id', $request->vendor_id)
+                    ->orWhereNull('vendor_id');
+            });
+        }
+
         // 📂 Filter by category
         if ($request->filled('category_id')) {
             $query->where('category_id', $request->category_id);
@@ -75,11 +83,12 @@ class ProductController extends Controller
     public function store(Request $request)
     {
         $data = $request->validate([
-            'sku'            => 'required|unique:products',
+            'sku'            => 'nullable|unique:products',
             'barcode'        => 'nullable|unique:products',
             'name'           => 'required|string',
             'description'    => 'nullable|string',
             'category_id'    => 'nullable|exists:categories,id',
+            'vendor_id'      => 'nullable|exists:vendors,id',
             'brand_id'       => 'nullable|exists:brands,id',
             'price'          => 'required|numeric',
             'cost_price'     => 'nullable|numeric',

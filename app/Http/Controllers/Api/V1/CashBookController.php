@@ -7,6 +7,7 @@ use App\Http\Response\ApiResponse;
 use App\Models\CashTransaction;
 use App\Services\CashSyncService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 class CashBookController extends Controller
@@ -38,8 +39,8 @@ class CashBookController extends Controller
             'date_from'  => ['nullable', 'date'],
             'date_to'    => ['nullable', 'date', 'after_or_equal:date_from'],
             'status'     => ['nullable', Rule::in(['pending', 'approved', 'void'])],
-            'source'     => ['nullable', Rule::in(['sales','purchases'])],
-            'type'       => ['nullable', Rule::in(['receipt','payment','expense','transfer_in','transfer_out'])],
+            'source'     => ['nullable', Rule::in(['sales', 'purchases'])],
+            'type'       => ['nullable', Rule::in(['receipt', 'payment', 'expense', 'transfer_in', 'transfer_out'])],
             'method'     => ['nullable', 'string', 'max:50'],
             'amount_min' => ['nullable', 'numeric', 'min:0'],
             'amount_max' => ['nullable', 'numeric', 'min:0'],
@@ -79,16 +80,16 @@ class CashBookController extends Controller
             ->when($search, function ($q) use ($search) {
                 $q->where(function ($qq) use ($search) {
                     $qq->where('reference', 'like', "%$search%")
-                       ->orWhere('voucher_no', 'like', "%$search%")
-                       ->orWhere('note', 'like', "%$search%");
+                        ->orWhere('voucher_no', 'like', "%$search%")
+                        ->orWhere('note', 'like', "%$search%");
                 });
             })
             ->orderBy('txn_date', 'asc')
             ->orderBy('id', 'asc');
 
         // Overall totals for the whole filtered set (not just current page)
-        $overallIn  = (clone $base)->whereIn('type',['receipt','transfer_in'])->sum('amount');
-        $overallOut = (clone $base)->whereIn('type',['payment','expense','transfer_out'])->sum('amount');
+        $overallIn  = (clone $base)->whereIn('type', ['receipt', 'transfer_in'])->sum('amount');
+        $overallOut = (clone $base)->whereIn('type', ['payment', 'expense', 'transfer_out'])->sum('amount');
         $overallNet = (float)$overallIn - (float)$overallOut;
 
         // Opening balance logic:
@@ -101,8 +102,8 @@ class CashBookController extends Controller
                 ->where('status', $status) // keep same status filter
                 ->where('txn_date', '<', $from);
 
-            $openIn  = (clone $openingQuery)->whereIn('type',['receipt','transfer_in'])->sum('amount');
-            $openOut = (clone $openingQuery)->whereIn('type',['payment','expense','transfer_out'])->sum('amount');
+            $openIn  = (clone $openingQuery)->whereIn('type', ['receipt', 'transfer_in'])->sum('amount');
+            $openOut = (clone $openingQuery)->whereIn('type', ['payment', 'expense', 'transfer_out'])->sum('amount');
             $opening = (float)$openIn - (float)$openOut;
         } else {
             $opening = 0.0;
@@ -152,33 +153,34 @@ class CashBookController extends Controller
             ->when($search, function ($q) use ($search) {
                 $q->where(function ($qq) use ($search) {
                     $qq->where('reference', 'like', "%$search%")
-                       ->orWhere('voucher_no', 'like', "%$search%")
-                       ->orWhere('note', 'like', "%$search%");
+                        ->orWhere('voucher_no', 'like', "%$search%")
+                        ->orWhere('note', 'like', "%$search%");
                 });
             })
-            ->where(function($q) use ($first) {
+            ->where(function ($q) use ($first) {
                 $q->where('txn_date', '<', $first->txn_date)
-                  ->orWhere(function($qq) use ($first) {
-                      $qq->where('txn_date', $first->txn_date)
-                         ->where('id', '<', $first->id);
-                  });
+                    ->orWhere(function ($qq) use ($first) {
+                        $qq->where('txn_date', $first->txn_date)
+                            ->where('id', '<', $first->id);
+                    });
             });
 
-        $prefixIn  = (clone $prefix)->whereIn('type', ['receipt','transfer_in'])->sum('amount');
-        $prefixOut = (clone $prefix)->whereIn('type', ['payment','expense','transfer_out'])->sum('amount');
+        $prefixIn  = (clone $prefix)->whereIn('type', ['receipt', 'transfer_in'])->sum('amount');
+        $prefixOut = (clone $prefix)->whereIn('type', ['payment', 'expense', 'transfer_out'])->sum('amount');
 
         $running = (float)$opening + ((float)$prefixIn - (float)$prefixOut);
 
         // Build page rows with running balance
         $rows       = [];
         $pageInflow = 0.0;
-        $pageOutflow= 0.0;
+        $pageOutflow = 0.0;
 
         foreach ($items as $t) {
             /** @var \App\Models\CashTransaction $t */
             $delta = $t->isInflow() ? (float)$t->amount : -(float)$t->amount;
             $running += $delta;
-            if ($delta > 0) $pageInflow += (float)$t->amount; else $pageOutflow += (float)$t->amount;
+            if ($delta > 0) $pageInflow += (float)$t->amount;
+            else $pageOutflow += (float)$t->amount;
 
             $rows[] = [
                 'id'               => $t->id,
@@ -192,7 +194,7 @@ class CashBookController extends Controller
                 'status'           => $t->status,
                 'source'           => class_basename($t->source_type),
                 'source_id'        => $t->source_id,
-                'counterparty'     => $t->counterparty?->only(['id','first_name','last_name','name']),
+                'counterparty'     => $t->counterparty?->only(['id', 'first_name', 'last_name', 'name']),
                 'running_balance'  => number_format($running, 2, '.', ''),
             ];
         }
@@ -212,6 +214,181 @@ class CashBookController extends Controller
             // Page data
             'transactions'    => $rows,
             'pagination'      => [
+                'total'        => $paginator->total(),
+                'per_page'     => $paginator->perPage(),
+                'current_page' => $paginator->currentPage(),
+                'last_page'    => $paginator->lastPage(),
+            ],
+        ]);
+    }
+
+    public function dailySummary(Request $request)
+    {
+        $request->validate([
+            'account_id' => ['nullable', 'exists:accounts,id'],
+            'branch_id'  => ['nullable', 'exists:branches,id'],
+            'date_from'  => ['nullable', 'date'],
+            'date_to'    => ['nullable', 'date', 'after_or_equal:date_from'],
+            'status'     => ['nullable', Rule::in(['pending', 'approved', 'void'])],
+            'source'     => ['nullable', Rule::in(['sales', 'purchases'])],
+            'type'       => ['nullable', Rule::in(['receipt', 'payment', 'expense', 'transfer_in', 'transfer_out'])],
+            'method'     => ['nullable', 'string', 'max:50'],
+            'amount_min' => ['nullable', 'numeric', 'min:0'],
+            'amount_max' => ['nullable', 'numeric', 'min:0'],
+            'search'     => ['nullable', 'string', 'max:200'],
+            'per_page'   => ['nullable', 'integer', 'min:1', 'max:200'],
+            'page'       => ['nullable', 'integer', 'min:1'],
+        ]);
+
+        $accountId = $request->account_id ? (int)$request->account_id : null;
+        $branchId  = $request->branch_id ? (int)$request->branch_id : null;
+        $from      = $request->date_from;
+        $to        = $request->date_to;
+        $status    = $request->status ?? 'approved';
+        $source    = $request->source;
+        $type      = $request->type;
+        $method    = $request->method;
+        $amtMin    = $request->amount_min;
+        $amtMax    = $request->amount_max;
+        $search    = $request->get('search');
+        $perPage   = (int) ($request->get('per_page', 30));
+        $perPage   = max(1, min($perPage, 200));
+
+        // Common filtered base
+        $base = CashTransaction::query()
+            ->when($accountId, fn($q) => $q->where('account_id', $accountId))
+            ->when($branchId,  fn($q) => $q->where('branch_id', $branchId))
+            ->when($from && $to, fn($q) => $q->whereBetween('txn_date', [$from, $to]))
+            ->when($from && !$to, fn($q) => $q->where('txn_date', '>=', $from))
+            ->when(!$from && $to, fn($q) => $q->where('txn_date', '<=', $to))
+            ->when($status, fn($q) => $q->where('status', $status))
+            ->when($source === 'sales', fn($q) => $q->where('source_type', \App\Models\Payment::class))
+            ->when($source === 'purchases', fn($q) => $q->where('source_type', \App\Models\PurchasePayment::class))
+            ->when($type, fn($q) => $q->where('type', $type))
+            ->when($method, fn($q) => $q->where('method', $method))
+            ->when(isset($amtMin), fn($q) => $q->where('amount', '>=', $amtMin))
+            ->when(isset($amtMax), fn($q) => $q->where('amount', '<=', $amtMax))
+            ->when($search, function ($q) use ($search) {
+                $q->where(function ($qq) use ($search) {
+                    $qq->where('reference', 'like', "%$search%")
+                        ->orWhere('voucher_no', 'like', "%$search%")
+                        ->orWhere('note', 'like', "%$search%");
+                });
+            });
+
+        // ---- Grand totals over filtered range ----
+        $totalIn      = (clone $base)->whereIn('type', ['receipt', 'transfer_in'])->sum('amount');
+        $totalPayOut  = (clone $base)->whereIn('type', ['payment', 'transfer_out'])->sum('amount');
+        $totalExpense = (clone $base)->where('type', 'expense')->sum('amount');
+        $totalNet     = (float)$totalIn - (float)($totalPayOut + $totalExpense);
+
+        // ---- Opening balance prior to date_from (if any) ----
+        if ($from) {
+            $openQ = CashTransaction::query()
+                ->when($accountId, fn($q) => $q->where('account_id', $accountId))
+                ->when($branchId,  fn($q) => $q->where('branch_id', $branchId))
+                ->where('status', $status)
+                ->where('txn_date', '<', $from)
+                ->when($source === 'sales', fn($q) => $q->where('source_type', \App\Models\Payment::class))
+                ->when($source === 'purchases', fn($q) => $q->where('source_type', \App\Models\PurchasePayment::class))
+                ->when($method, fn($q) => $q->where('method', $method))
+                ->when(isset($amtMin), fn($q) => $q->where('amount', '>=', $amtMin))
+                ->when(isset($amtMax), fn($q) => $q->where('amount', '<=', $amtMax))
+                ->when($search, function ($q) use ($search) {
+                    $q->where(function ($qq) use ($search) {
+                        $qq->where('reference', 'like', "%$search%")
+                            ->orWhere('voucher_no', 'like', "%$search%")
+                            ->orWhere('note', 'like', "%$search%");
+                    });
+                });
+
+            $openIn      = (clone $openQ)->whereIn('type', ['receipt', 'transfer_in'])->sum('amount');
+            $openPayOut  = (clone $openQ)->whereIn('type', ['payment', 'transfer_out'])->sum('amount');
+            $openExpense = (clone $openQ)->where('type', 'expense')->sum('amount');
+            $opening     = (float)$openIn - (float)($openPayOut + $openExpense);
+        } else {
+            $opening = 0.0;
+        }
+
+        $closingOverall = (float)$opening + (float)$totalNet;
+
+        // ---- Aggregate per day (DATE(txn_date)) ----
+        // d = date, payment_in, payment_out, expense
+        $dailyAgg = (clone $base)
+            ->selectRaw('DATE(txn_date) as d')
+            ->selectRaw("SUM(CASE WHEN type IN ('receipt','transfer_in') THEN amount ELSE 0 END) AS payment_in")
+            ->selectRaw("SUM(CASE WHEN type IN ('payment','transfer_out') THEN amount ELSE 0 END) AS payment_out")
+            ->selectRaw("SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) AS expense")
+            ->groupBy('d');
+
+        // Level 2: add net
+        $dailyWithNet = DB::query()
+            ->fromSub($dailyAgg, 'a')
+            ->selectRaw('d, payment_in, payment_out, expense, (payment_in - (payment_out + expense)) AS net');
+
+        // Level 3: add cumulative net
+        $withCum = DB::query()
+            ->fromSub($dailyWithNet, 'b')
+            ->selectRaw('d, payment_in, payment_out, expense, net')
+            ->selectRaw('SUM(net) OVER (ORDER BY d ASC ROWS UNBOUNDED PRECEDING) AS cum_net');
+
+        // Level 4: compute daily opening and closing using overall $opening
+        $final = DB::query()
+            ->fromSub($withCum, 'c')
+            ->selectRaw('d, payment_in, payment_out, expense, net')
+            ->selectRaw('(? + cum_net - net) AS opening_day', [$opening])
+            ->selectRaw('(? + cum_net)       AS closing',     [$opening]);
+
+        // Final: order by date DESC and paginate
+        $paginator = $final
+            ->orderBy('d', 'desc')
+            ->paginate($perPage);
+
+        // Build rows
+        $rows = [];
+        $pageIn = $pageOut = $pageExp = $pageNet = 0.0;
+
+        foreach ($paginator->items() as $r) {
+            $pi = (float)$r->payment_in;
+            $po = (float)$r->payment_out;
+            $ex = (float)$r->expense;
+            $nt = (float)$r->net;
+            $op = (float)$r->opening_day;
+            $cl = (float)$r->closing;
+
+            $pageIn  += $pi;
+            $pageOut += $po;
+            $pageExp += $ex;
+            $pageNet += $nt;
+
+            $rows[] = [
+                'date'         => (string)$r->d,
+                'payment_in'   => number_format($pi, 2, '.', ''),
+                'payment_out'  => number_format($po, 2, '.', ''),
+                'expense'      => number_format($ex, 2, '.', ''),
+                'net'          => number_format($nt, 2, '.', ''),
+                'opening'      => number_format($op, 2, '.', ''),   // <-- NEW
+                'closing'      => number_format($cl, 2, '.', ''),
+            ];
+        }
+
+        return ApiResponse::success([
+            'opening_balance' => number_format($opening, 2, '.', ''),
+            'totals' => [
+                'payment_in'  => number_format((float)$totalIn, 2, '.', ''),
+                'payment_out' => number_format((float)$totalPayOut, 2, '.', ''),
+                'expense'     => number_format((float)$totalExpense, 2, '.', ''),
+                'net'         => number_format((float)$totalNet, 2, '.', ''),
+                'closing'     => number_format((float)$closingOverall, 2, '.', ''),
+            ],
+            'page_totals' => [
+                'payment_in'  => number_format((float)$pageIn, 2, '.', ''),
+                'payment_out' => number_format((float)$pageOut, 2, '.', ''),
+                'expense'     => number_format((float)$pageExp, 2, '.', ''),
+                'net'         => number_format((float)$pageNet, 2, '.', ''),
+            ],
+            'rows' => $rows, // one per day
+            'pagination' => [
                 'total'        => $paginator->total(),
                 'per_page'     => $paginator->perPage(),
                 'current_page' => $paginator->currentPage(),
