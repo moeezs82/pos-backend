@@ -26,8 +26,8 @@ class ProductController extends Controller
 
         // 📂 Filter by vendor
         if ($request->filled('vendor_id')) {
-            $query->where(function ($query) use ($request) {
-                $query->where('vendor_id', $request->vendor_id)
+            $query->where(function ($q) use ($request) {
+                $q->where('vendor_id', $request->vendor_id)
                     ->orWhereNull('vendor_id');
             });
         }
@@ -121,9 +121,13 @@ class ProductController extends Controller
         $data['product'] = Product::with(['category', 'brand', 'stocks.branch'])->findOrFail($id);
         return ApiResponse::success($data, 'Product retrived successfully');
     }
-    public function findByBarcode($code)
+    public function findByBarcode($code,$vendor_id=null)
     {
-        $product = Product::where('barcode', $code)->first();
+        if ($vendor_id) {
+            $product = Product::where('barcode', $code)->where('vendor_id', $vendor_id)->first();
+        } else {
+            $product = Product::where('barcode', $code)->first();
+        }
         if (!$product) {
             return ApiResponse::error("Product not found", 404);
         }
@@ -144,7 +148,7 @@ class ProductController extends Controller
             'brand_id'       => 'nullable|exists:brands,id',
             'price'          => 'numeric',
             'cost_price'     => 'nullable|numeric',
-            'wholesale_price' => 'nullable|numeric',
+            'wholesale_price'=> 'nullable|numeric',
             'tax_rate'       => 'nullable|numeric',
             'tax_inclusive'  => 'boolean',
             'discount'       => 'nullable|numeric',

@@ -18,6 +18,7 @@ class RolePermissionSeeder extends Seeder
         $permissions = [
             'manage-stock',
             'view-reports',
+            'view-users',
             'manage-users',
             'view-stock',
             'adjust-stock',
@@ -33,6 +34,7 @@ class RolePermissionSeeder extends Seeder
             'view-brands',
             'manage-brands',
             'adjust-stock',
+            'create-sales',
             'manage-sales',
             'refund-sale',
             'view-sales',
@@ -44,6 +46,8 @@ class RolePermissionSeeder extends Seeder
             'manage-branches',
             'view-cashbook',
             'manage-cashbook',
+            'view-roles',
+            'manage-roles',
         ];
 
         foreach ($permissions as $perm) {
@@ -54,6 +58,7 @@ class RolePermissionSeeder extends Seeder
         $admin = Role::firstOrCreate(['name' => 'admin']);
         $manager = Role::firstOrCreate(['name' => 'manager']);
         $cashier = Role::firstOrCreate(['name' => 'cashier']);
+        $salesman = Role::firstOrCreate(['name' => 'salesman']);
 
         // Assign permissions
         $admin->givePermissionTo(Permission::all());
@@ -67,9 +72,16 @@ class RolePermissionSeeder extends Seeder
         ]);
 
         $cashier->givePermissionTo([
-            'create-sale',
+            'create-sales',
             'refund-sale',
             'view-sales'
+        ]);
+        $salesman->givePermissionTo([
+            'create-sales',
+            'refund-sale',
+            'view-sales',
+            'view-customers',
+            'view-vendors',
         ]);
     }
 }

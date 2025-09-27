@@ -61,81 +61,186 @@ class PurchaseClaimController extends Controller
     public function store(Request $request)
     {
         $data = $request->validate([
-            'purchase_id' => 'required|exists:purchases,id',
-            'type'        => 'nullable|in:shortage,damaged,wrong_item,expired,other',
-            'reason'      => 'nullable|string',
-            'items'       => 'required|array|min:1',
-            'items.*.purchase_item_id' => 'required|exists:purchase_items,id',
-            'items.*.quantity'         => 'required|integer|min:1',
-            'items.*.affects_stock'    => 'nullable|boolean', // default inferred by type (see below)
-            'items.*.remarks'          => 'nullable|string',
-            'items.*.batch_no'         => 'nullable|string',
-            'items.*.expiry_date'      => 'nullable|date',
+            'purchase_id' => ['required', 'integer', 'exists:purchases,id'],
+            'type'        => ['nullable', 'in:shortage,damaged,wrong_item,expired,other'],
+            'reason'      => ['nullable', 'string'],
+            'items'       => ['required', 'array', 'min:1'],
+
+            // Ensure item exists AND belongs to this purchase_id (checked below too)
+            'items.*.purchase_item_id' => ['required', 'integer'],
+            'items.*.quantity'         => ['required', 'integer', 'min:1'],
+            'items.*.affects_stock'    => ['nullable', 'boolean'], // default inferred by type
+            'items.*.remarks'          => ['nullable', 'string'],
+            'items.*.batch_no'         => ['nullable', 'string'],
+            'items.*.expiry_date'      => ['nullable', 'date'],
         ]);
 
         return DB::transaction(function () use ($data, $request) {
-            $purchase = Purchase::with(['items'])->findOrFail($data['purchase_id']);
+            // Lock the purchase header
+            $purchase = \App\Models\Purchase::query()
+                ->where('id', $data['purchase_id'])
+                ->lockForUpdate()
+                ->firstOrFail();
 
-            // Map purchase items for quick validation
-            $purchaseItems = $purchase->items->keyBy('id');
+            $type = $data['type'] ?? 'other';
 
-            $claimNo = 'PCL-' . time();
+            // Fetch ONLY the items involved (ONE query)
+            $requestedIds = collect($data['items'])->pluck('purchase_item_id')->unique()->values();
+            $purchaseItems = \App\Models\PurchaseItem::query()
+                ->where('purchase_id', $purchase->id)
+                ->whereIn('id', $requestedIds)
+                ->select('id', 'purchase_id', 'product_id', 'quantity', 'price')
+                ->get()
+                ->keyBy('id');
 
-            $claim = PurchaseClaim::create([
-                'claim_no'   => $claimNo,
-                'purchase_id' => $purchase->id,
-                'vendor_id'  => $purchase->vendor_id,
-                'branch_id'  => $purchase->branch_id,
-                'type'       => $data['type'] ?? 'other',
-                'reason'     => $data['reason'] ?? null,
-                'status'     => 'pending',
-                'subtotal'   => 0,
-                'tax'        => 0,
-                'total'      => 0,
-                'created_by' => optional($request->user())->id,
-            ]);
+            // Ensure all requested items belong to this purchase
+            if ($purchaseItems->count() !== $requestedIds->count()) {
+                return \App\Http\Response\ApiResponse::error(
+                    'One or more purchase_item_id do not belong to this purchase.',
+                    422
+                );
+            }
 
-            $subtotal = 0;
+            // Sum already claimed qty for these items in ONE query
+            // If you have statuses, exclude rejected/cancelled here as needed.
+            $alreadyClaimed = DB::table('purchase_claim_items as pci')
+                ->join('purchase_claims as pc', 'pc.id', '=', 'pci.purchase_claim_id')
+                ->where('pc.purchase_id', $purchase->id)
+                // ->whereNotIn('pc.status', ['rejected','cancelled']) // uncomment if applicable
+                ->whereIn('pci.purchase_item_id', $requestedIds)
+                ->groupBy('pci.purchase_item_id')
+                ->pluck(DB::raw('SUM(pci.quantity)'), 'pci.purchase_item_id'); // map: id => claimed_qty
 
-            foreach ($data['items'] as $i) {
-                /** @var PurchaseItem|null $pItem */
-                $pItem = $purchaseItems->get($i['purchase_item_id']);
-                if (!$pItem) {
-                    return ApiResponse::error("Purchase item #{$i['purchase_item_id']} does not belong to purchase #{$purchase->id}.", 422);
+            // Single validation + preparation pass
+            $violations = [];
+            $prepared = []; // for bulk insert
+            $byProductDelta = []; // product_id => qty to decrement from stock if affects_stock=true
+            $subtotal = 0.0;
+
+            foreach ($data['items'] as $row) {
+                $pi = $purchaseItems[$row['purchase_item_id']];
+                $sold = (int) $pi->quantity;                 // purchased qty
+                $prev = (int) ($alreadyClaimed[$pi->id] ?? 0);
+                $remaining = max($sold - $prev, 0);
+
+                $req = (int) $row['quantity'];
+                if ($req > $remaining) {
+                    $violations[] = "Item #{$pi->id}: requested {$req} exceeds remaining {$remaining} (purchased {$sold}, claimed {$prev}).";
+                    continue;
                 }
+                if ($req <= 0) continue;
 
-                $qty = (int) $i['quantity'];
-                if ($qty < 1) $qty = 1;
+                // default affects_stock: shortage = false; others = true (can be overridden per-line)
+                $affects = array_key_exists('affects_stock', $row)
+                    ? (bool)$row['affects_stock']
+                    : ($type !== 'shortage');
 
-                // Price: use purchase item price (cost)
-                $price = (float) $pItem->price;
-                $line  = $qty * $price;
+                $price = (float) $pi->price; // use purchase cost
+                $line  = $req * $price;
                 $subtotal += $line;
 
-                // Affects-stock default rule: shortage = false; otherwise true
-                $affects = array_key_exists('affects_stock', $i)
-                    ? (bool)$i['affects_stock']
-                    : (($data['type'] ?? 'other') !== 'shortage');
-
-                $claim->items()->create([
-                    'purchase_item_id' => $pItem->id,
-                    'product_id'       => $pItem->product_id,
-                    'quantity'         => $qty,
+                $prepared[] = [
+                    'purchase_item_id' => $pi->id,
+                    'product_id'       => $pi->product_id,
+                    'quantity'         => $req,
                     'price'            => $price,
                     'total'            => $line,
                     'affects_stock'    => $affects,
-                    'remarks'          => $i['remarks'] ?? null,
-                    'batch_no'         => $i['batch_no'] ?? null,
-                    'expiry_date'      => $i['expiry_date'] ?? null,
-                ]);
+                    'remarks'          => $row['remarks'] ?? null,
+                    'batch_no'         => $row['batch_no'] ?? null,
+                    'expiry_date'      => $row['expiry_date'] ?? null,
+                ];
+
+                if ($affects) {
+                    // We are CLAIMING against stock => reduce branch stock
+                    $byProductDelta[$pi->product_id] = ($byProductDelta[$pi->product_id] ?? 0) + $req;
+                }
             }
 
-            $claim->update([
-                'subtotal' => $subtotal,
-                'total'    => $subtotal, // add tax calculation here if needed
+            if (!empty($violations)) {
+                return \App\Http\Response\ApiResponse::error([
+                    'message' => 'Purchase claim validation failed.',
+                    'details' => $violations,
+                ], 422);
+            }
+            if (empty($prepared)) {
+                return \App\Http\Response\ApiResponse::error('No valid claim lines.', 422);
+            }
+
+            // Create claim header
+            $claim = \App\Models\PurchaseClaim::create([
+                'claim_no'    => 'PCL-' . now()->format('YmdHis'),
+                'purchase_id' => $purchase->id,
+                'vendor_id'   => $purchase->vendor_id,
+                'branch_id'   => $purchase->branch_id,
+                'type'        => $type,
+                'reason'      => $data['reason'] ?? null,
+                'status'      => 'pending',
+                'subtotal'    => $subtotal,
+                'tax'         => 0,
+                'total'       => $subtotal, // add tax if needed
+                'created_by'  => optional($request->user())->id,
             ]);
 
-            return ApiResponse::success($claim->load(['items.product:id,name,sku']));
+            // Bulk insert claim items (ONE query)
+            $rows = array_map(function ($line) use ($claim) {
+                return [
+                    'purchase_claim_id' => $claim->id,
+                    'purchase_item_id'  => $line['purchase_item_id'],
+                    'product_id'        => $line['product_id'],
+                    'quantity'          => $line['quantity'],
+                    'price'             => $line['price'],
+                    'total'             => $line['total'],
+                    'affects_stock'     => $line['affects_stock'],
+                    'remarks'           => $line['remarks'],
+                    'batch_no'          => $line['batch_no'],
+                    'expiry_date'       => $line['expiry_date'],
+                    'created_at'        => now(),
+                    'updated_at'        => now(),
+                ];
+            }, $prepared);
+            DB::table('purchase_claim_items')->insert($rows);
+
+            // If any lines affect stock, decrement product_stocks in ONE SQL
+            if (!empty($byProductDelta)) {
+                $productIds = array_keys($byProductDelta);
+
+                // Lock rows to prevent races
+                DB::table('product_stocks')
+                    ->where('branch_id', $purchase->branch_id)
+                    ->whereIn('product_id', $productIds)
+                    ->lockForUpdate()
+                    ->get();
+
+                $case = collect($byProductDelta)->map(function ($qty, $pid) {
+                    return "WHEN {$pid} THEN {$qty}";
+                })->implode(' ');
+
+                DB::update("
+                UPDATE product_stocks
+                SET quantity = quantity - CASE product_id {$case} END
+                WHERE branch_id = ? AND product_id IN (" . implode(',', $productIds) . ")
+            ", [$purchase->branch_id]);
+
+                // Stock movements — bulk insert (ONE query)
+                $movementRows = [];
+                foreach ($byProductDelta as $pid => $qty) {
+                    $movementRows[] = [
+                        'product_id' => $pid,
+                        'branch_id'  => $purchase->branch_id,
+                        'type'       => 'purchase-claim', // or 'adjustment'
+                        'quantity'   => -$qty,            // negative because stock reduced
+                        'reference'  => $claim->claim_no,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ];
+                }
+                DB::table('stock_movements')->insert($movementRows);
+            }
+
+            return \App\Http\Response\ApiResponse::success(
+                $claim->load(['items.product:id,name,sku'])
+            );
         });
     }
 

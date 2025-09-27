@@ -10,10 +10,12 @@ use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\ProductController;
 use App\Http\Controllers\Api\V1\PurchaseClaimController;
 use App\Http\Controllers\Api\V1\PurchaseController;
+use App\Http\Controllers\Api\V1\RoleController;
 use App\Http\Controllers\Api\V1\SaleController;
 use App\Http\Controllers\Api\V1\SaleItemController;
 use App\Http\Controllers\Api\V1\SaleReturnController;
 use App\Http\Controllers\Api\V1\StockController;
+use App\Http\Controllers\Api\V1\UserController;
 use App\Http\Controllers\Api\V1\VendorController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -43,6 +45,29 @@ Route::prefix('v1')->group(function () {
         Route::delete('/branches/{id}', [BranchController::class, 'destroy'])
             ->middleware('permission:manage-branches');
 
+        // users
+        Route::prefix('users')->middleware('permission:view-users')->group(function () {
+            Route::get('/',            [UserController::class, 'index']);
+            Route::post('/',            [UserController::class, 'store'])->middleware('permission:manage-users');
+            Route::get('/{user}',     [UserController::class, 'show']);
+            Route::put('/{user}',     [UserController::class, 'update'])->middleware('permission:manage-users');
+            Route::delete('/{user}',     [UserController::class, 'destroy'])->middleware('permission:manage-users');
+
+            // Assignments
+            Route::post('/{user}/roles',        [UserController::class, 'syncRoles'])->middleware('permission:manage-users');
+            // Route::post('/{user}/permissions',  [UserController::class, 'syncPermissions'])->middleware('permission:manage-users');
+        });
+
+        // Roles
+        Route::prefix('roles')->middleware('permission:view-roles')->group(function () {
+            Route::get('/',           [RoleController::class, 'index']);
+            Route::post('/',           [RoleController::class, 'store'])->middleware('permission:manage-roles');
+            Route::get('/permissions',    [RoleController::class, 'availablePermissions']);
+            Route::get('/{role}',    [RoleController::class, 'show']);
+            Route::put('/{role}',    [RoleController::class, 'update'])->middleware('permission:manage-roles');
+            Route::delete('/{role}',    [RoleController::class, 'destroy'])->middleware('permission:manage-roles');
+            Route::post('/{role}/permissions', [RoleController::class, 'syncPermissions'])->middleware('permission:manage-roles');
+        });
 
         // Categories
         Route::get('/categories', [CategoryController::class, 'index'])
@@ -79,7 +104,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/', [ProductController::class, 'index'])->middleware('permission:view-products');
             Route::post('/', [ProductController::class, 'store'])->middleware('permission:manage-products');
             Route::get('/{id}', [ProductController::class, 'show'])->middleware('permission:view-products');
-            Route::get('/by-barcode/{code}', [ProductController::class, 'findByBarcode'])->middleware('permission:view-products');
+            Route::get('/by-barcode/{code}/{vendor_id?}', [ProductController::class, 'findByBarcode'])->middleware('permission:view-products');
             Route::put('/{id}', [ProductController::class, 'update'])->middleware('permission:manage-products');
             Route::delete('/{id}', [ProductController::class, 'destroy'])->middleware('permission:manage-products');
         });
@@ -111,8 +136,9 @@ Route::prefix('v1')->group(function () {
 
 
             Route::get('/', [SaleController::class, 'index'])->middleware('permission:view-sales');
-            Route::post('/', [SaleController::class, 'store'])->middleware('permission:manage-sales');
+            Route::post('/', [SaleController::class, 'store'])->middleware('permission:create-sales');
             Route::get('/{id}', [SaleController::class, 'show'])->middleware('permission:view-sales');
+            Route::put('/{id}', [SaleController::class, 'update'])->middleware('permission:manage-sales');
             Route::prefix('{sale}')->middleware('permission:manage-sales')->group(function () {
                 Route::post('payments', [PaymentController::class, 'store']);
                 Route::put('payments/{payment}', [PaymentController::class, 'update']);
@@ -152,10 +178,11 @@ Route::prefix('v1')->group(function () {
             Route::post('/{id}/reject',  [PurchaseClaimController::class, 'reject'])->middleware('permission:manage-purchases');
             Route::post('/{id}/close',   [PurchaseClaimController::class, 'close'])->middleware('permission:manage-purchases');
         });
-        Route::prefix('cashbook')->group(function() {
-            Route::get('/', [CashBookController::class, 'index'])->middleware('permission:view-cashbook');
-            Route::get('/daily-summary', [CashBookController::class, 'dailySummary'])->middleware('permission:view-cashbook');
+        Route::prefix('cashbook')->middleware('permission:view-cashbook')->group(function () {
+            Route::get('/', [CashBookController::class, 'index']);
+            Route::get('/daily-summary', [CashBookController::class, 'dailySummary']);
             Route::post('/expense', [CashBookController::class, 'storeExpense'])->middleware('permission:manage-cashbook');
+            Route::get('/day-details', [CashbookController::class, 'dailyDetails']);
         });
     });
 });

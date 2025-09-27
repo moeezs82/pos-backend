@@ -11,7 +11,7 @@ class CategoryController extends Controller
 {
     public function index()
     {
-        $data['categories'] = Category::all();
+        $data['categories'] = Category::orderBy('name')->get(['id', 'name']);
         return ApiResponse::success($data, 'categories retrieved successfully');
     }
 

@@ -53,17 +53,68 @@ class SaleController extends Controller
     // Get single sale with details
     public function show($id)
     {
-        $sale = Sale::with('customer', 'branch', 'items.product', 'payments')->findOrFail($id);
+        $sale = Sale::with(['customer:id,first_name,last_name', 'branch', 'items.product:id,name', 'payments', 'vendor:id,first_name,last_name', 'salesman:id,name'])->findOrFail($id);
 
         return ApiResponse::success($sale);
     }
 
+    public function update(Request $request, $id)
+    {
+        // Only allow updating discount & tax from this endpoint (as per your UI)
+        $data = $request->validate([
+            'discount' => 'nullable|numeric|min:0',
+            'tax'      => 'nullable|numeric|min:0',
+        ]);
+
+        // Load sale with items once
+        $sale = Sale::with(['items', 'payments'])->findOrFail($id);
+
+        // Optional: block edits for certain statuses (adjust to your app’s statuses)
+        if (in_array($sale->status, ['cancelled', 'void', 'returned'])) {
+            return ApiResponse::error("This sale can't be edited in its current status.", 422);
+        }
+
+        return DB::transaction(function () use ($sale, $data) {
+            // Recompute subtotal from existing items
+            $subtotal = $sale->items->sum(function ($i) {
+                return ((float) $i->quantity) * ((float) $i->price);
+            });
+
+            // New discount/tax (fallback to current values if not provided)
+            $discount = array_key_exists('discount', $data)
+                ? (float) $data['discount']
+                : (float) $sale->discount;
+
+            $tax = array_key_exists('tax', $data)
+                ? (float) $data['tax']
+                : (float) $sale->tax;
+
+            // Compute total (never below zero)
+            $total = max(0, $subtotal - $discount + $tax);
+
+            // Persist
+            $sale->update([
+                'subtotal' => round($subtotal, 2),
+                'discount' => round($discount, 2),
+                'tax'      => round($tax, 2),
+                'total'    => round($total, 2),
+            ]);
+
+            // Re-evaluate status after totals change
+            $this->updateSaleStatus($sale);
+
+            // Return fresh copy
+            return ApiResponse::success($sale->fresh(['items', 'payments']));
+        });
+    }
 
     public function store(Request $request)
     {
         $data = $request->validate([
             'customer_id' => 'nullable|exists:customers,id',
             'vendor_id' => 'nullable|exists:vendors,id',
+            'salesman_id' => 'nullable|exists:users,id',
+            'created_by' => 'nullable|exists:users,id',
             'branch_id'   => 'required|exists:branches,id',
             'items'       => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
@@ -89,6 +140,9 @@ class SaleController extends Controller
             $sale = Sale::create([
                 'invoice_no' => 'INV-' . time(),
                 'customer_id' => $data['customer_id'] ?? null,
+                'vendor_id' => $data['vendor_id'] ?? null,
+                'salesman_id' => $data['salesman_id'] ?? null,
+                'created_by' => $data['created_by'] ?? auth()->id(),
                 'branch_id'  => $branchId,
                 'subtotal'   => $subtotal,
                 'discount'   => $data['discount'] ?? 0,

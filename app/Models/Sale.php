@@ -10,33 +10,55 @@ class Sale extends Model
     use SoftDeletes;
 
     protected $fillable = [
-        'invoice_no','customer_id','branch_id',
-        'subtotal','discount','tax','total','status'
+        'invoice_no',
+        'customer_id',
+        'branch_id',
+        'vendor_id',
+        'salesman_id',
+        'created_by',
+        'subtotal',
+        'discount',
+        'tax',
+        'total',
+        'status'
     ];
 
-    public function items() {
+    public function items()
+    {
         return $this->hasMany(SaleItem::class);
     }
 
-    public function payments() {
+    public function payments()
+    {
         return $this->hasMany(Payment::class);
     }
 
-    public function customer() {
+    public function customer()
+    {
         return $this->belongsTo(Customer::class);
     }
 
-    public function branch() {
+    public function branch()
+    {
         return $this->belongsTo(Branch::class);
+    }
+    public function vendor()
+    {
+        return $this->belongsTo(Vendor::class);
+    }
+    public function salesman()
+    {
+        return $this->belongsTo(User::class, 'salesman_id');
     }
 
     // Accessors
-    public function getPaidAmountAttribute() {
+    public function getPaidAmountAttribute()
+    {
         return $this->payments()->sum('amount');
     }
 
-    public function getBalanceAttribute() {
+    public function getBalanceAttribute()
+    {
         return $this->total - $this->paid_amount;
     }
-
 }

@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class SaleReturn extends Model
 {
     protected $fillable = [
-        'sale_id','customer_id','branch_id','return_no',
+        'sale_id','customer_id','branch_id','return_no', 'vendor_id',
         'subtotal','tax','total','status','reason'
     ];
 
