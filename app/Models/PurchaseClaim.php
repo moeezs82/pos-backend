@@ -27,4 +27,8 @@ class PurchaseClaim extends Model
     public function items() {
         return $this->hasMany(PurchaseClaimItem::class);
     }
+
+    public function receipts() {
+        return $this->hasMany(PurchaseClaimReceipt::class);
+    }
 }

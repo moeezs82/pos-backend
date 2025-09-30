@@ -4,28 +4,53 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
+use App\Models\CashTransaction;
 use App\Models\Sale;
 use App\Models\SaleItem;
 use App\Models\SaleReturn;
+use App\Models\SaleReturnRefund;
 use App\Models\StockMovement;
+use App\Services\CashSyncService;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class SaleReturnController extends Controller
 {
     public function index(Request $request)
     {
-        $query = SaleReturn::with(['sale:id,invoice_no,customer_id,branch_id', 'sale.customer:id,first_name,last_name', 'sale.branch:id,name']);
+        $query = SaleReturn::with(['sale:id,invoice_no,customer_id,branch_id', 'sale.customer:id,first_name,last_name', 'sale.branch:id,name'])
+                ->withSum('refunds as refund_total', 'amount');
 
         if ($request->branch_id) {
             $query->where('branch_id', $request->branch_id);
+        }
+
+        if ($request->customer_id) {
+            $query->where('customer_id', $request->customer_id);
+        }
+
+        if ($request->filled('date_from')) {
+            $query->whereDate('created_at', '>=', $request->date_from);
+        }
+        if ($request->filled('date_to')) {
+            $query->whereDate('created_at', '<=', $request->date_to);
         }
 
         if ($request->status) {
             $query->where('status', $request->status);
         }
 
-        return ApiResponse::success($query->paginate(15));
+        if ($search = $request->get('search')) {
+            $query->where(function ($q) use ($search) {
+                $q->where('return_no', 'like', "%$search%")
+                    ->orWhereHas('sale', fn($p) => $p->where('invoice_no', 'like', "%$search%"));
+                    // ->orWhereHas('sale.customer', fn($v) => $v->where('first_name', 'like', "%$search%"));
+            });
+        }
+
+        return ApiResponse::success($query->orderByDesc('id')->paginate(15));
     }
 
     public function show($id)
@@ -34,7 +59,8 @@ class SaleReturnController extends Controller
             'sale:id,invoice_no,customer_id,branch_id,subtotal,total',
             'sale.customer:id,first_name,last_name,email,phone',
             'sale.branch:id,name',
-            'items.product:id,name,sku'
+            'items.product:id,name,sku',
+            'refunds:id,sale_return_id,amount'
         ])->findOrFail($id);
 
         return ApiResponse::success($return);
@@ -48,10 +74,16 @@ class SaleReturnController extends Controller
             'items.*.sale_item_id' => ['required', 'integer'],
             'items.*.quantity'     => ['required', 'integer', 'min:1'],
             'reason' => ['nullable', 'string'],
+            // New: approve + refund on create
+            'approve_now'          => ['nullable', 'boolean'],
+            'refund.amount'        => ['nullable', 'numeric', 'min:0.01'],
+            'refund.method'        => ['nullable', 'string'],
+            'refund.reference'     => ['nullable', 'string'],
+            'refund.refunded_at'   => ['nullable', 'date'],
         ]);
 
         $sale = Sale::where('id', $data['sale_id'])->lockForUpdate()->firstOrFail();
-        return DB::transaction(function () use ($data, $sale) {
+        return DB::transaction(function () use ($data, $sale, $request) {
             // Lock sale header
 
             // Only fetch the items we need (ONE query)
@@ -170,17 +202,128 @@ class SaleReturnController extends Controller
                 }
                 DB::table('stock_movements')->insert($movementRows);
             }
+            // --- Approve now & immediate refund (optional) ---
+            $approveNow = (bool) ($data['approve_now'] ?? false);
+            $refundedTotal = 0.0;
+            $refundableLeft = (float) $return->total;
+
+            if ($approveNow) {
+                $return->update(['status' => 'approved']);
+
+                // If refund provided, validate and post to cashbook
+                $refundAmount = (float) ($request->input('refund.amount') ?? 0);
+                if ($refundAmount > 0) {
+                    if ($refundAmount > $refundableLeft) {
+                        return \App\Http\Response\ApiResponse::error(
+                            "Refund {$refundAmount} exceeds refundable left {$refundableLeft}",
+                            422
+                        );
+                    }
+
+                    SaleReturnRefund::create([
+                        'sale_return_id' => $return->id,
+                        'amount'         => (float)$request->input('refund.amount'),
+                        'method'         => $request->input('refund.method', 'cash'),
+                        'reference'      => $request->input('refund.reference'),
+                        'refunded_at'    => $request->input('refund.refunded_at'),
+                        'created_by'     => optional($request->user())->id,
+                    ]);
+                }
+            }
 
             return ApiResponse::success($return->load('items'));
         });
     }
-
-
-    // Approve Return
-    public function approve($id)
+    // Approve Return / Refund
+    public function approve(Request $request, $id)
     {
-        $return = SaleReturn::findOrFail($id);
-        $return->update(['status' => 'approved']);
-        return ApiResponse::success($return);
+        // Optional refund payload validation
+        $request->validate([
+            'refund.amount'      => 'nullable|numeric|min:0.01',
+            'refund.method'      => 'nullable|string',
+            'refund.reference'   => 'nullable|string',
+            'refund.refunded_at' => 'nullable|date',
+        ]);
+
+        return DB::transaction(function () use ($request, $id) {
+            /** @var \App\Models\SaleReturn $return */
+            $return = SaleReturn::query()
+                ->where('id', $id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            // 1) Approve (idempotent)
+            if ($return->status !== 'approved') {
+                $return->update(['status' => 'approved']);
+            }
+
+            $refundedNow = $this->storeRefund($return, $request);
+            $amount = (float) data_get($request->input('refund'), 'amount', 0);
+            return \App\Http\Response\ApiResponse::success([
+                'return'         => $return->fresh(),
+                'refunded_total' => round((float)$refundedNow, 2),
+                'refundable_left' => round(max(0, (float)$return->total - (float)$refundedNow), 2),
+            ], 'Sale return approved' . ($amount > 0 ? ' and refund posted' : ''));
+        });
+    }
+
+    public function refund(Request $request, $id)
+    {
+        $request->validate([
+            'amount'      => 'required|numeric|min:0.01',
+            'method'      => 'nullable|string',
+            'reference'   => 'nullable|string',
+            'refunded_at' => 'nullable|date',
+        ]);
+
+        return DB::transaction(function () use ($request, $id) {
+            /** @var \App\Models\SaleReturn $return */
+            $return = SaleReturn::query()
+                ->where('id', $id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $refundedNow = $this->storeRefund($return, $request);
+
+            return \App\Http\Response\ApiResponse::success([
+                'return'          => $return->fresh(),
+                'refunded_total'  => round((float)$refundedNow, 2),
+                'refundable_left' => round(max(0, (float)$return->total - (float)$refundedNow), 2),
+            ], 'Refund posted');
+        });
+    }
+
+    protected function storeRefund(SaleReturn $return, Request $request)
+    {
+        if ($return->status !== 'approved') {
+            throw ValidationException::withMessages([
+                'status' => 'Return must be approved before refunding.',
+            ]);
+        }
+
+        $amount = (float) $request->input('amount');
+
+        // Already refunded total (approved cash rows)
+        $refunded = SaleReturnRefund::query()
+            ->where('sale_return_id', $return->id)
+            ->sum('amount');
+
+        $left = max(0, (float)$return->total - (float)$refunded);
+        if ($amount > $left) {
+            throw ValidationException::withMessages([
+                'amount' => "Amount {$amount} exceeds refundable left {$left}.",
+            ]);
+        }
+
+        SaleReturnRefund::create([
+            'sale_return_id' => $return->id,
+            'amount'         => (float)$request->input('refund.amount'),
+            'method'         => $request->input('refund.method', 'cash'),
+            'reference'      => $request->input('refund.reference'),
+            'refunded_at'    => $request->input('refund.refunded_at'),
+            'created_by'     => optional($request->user())->id,
+        ]);
+
+        return $refunded + $amount;
     }
 }

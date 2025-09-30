@@ -132,6 +132,7 @@ Route::prefix('v1')->group(function () {
                 Route::get('/{id}', [SaleReturnController::class, 'show']);
                 Route::post('/', [SaleReturnController::class, 'store']);
                 Route::post('/{id}/approve', [SaleReturnController::class, 'approve']);
+                Route::post('/{id}/refund', [SaleReturnController::class, 'refund']);
             });
 
 
@@ -154,6 +155,7 @@ Route::prefix('v1')->group(function () {
         Route::prefix('purchases')->group(function () {
             Route::get('/',                    [PurchaseController::class, 'index'])->middleware('permission:view-purchases');
             Route::get('/{purchase}',          [PurchaseController::class, 'show'])->middleware('permission:view-purchases');
+            Route::put('/{id}',          [PurchaseController::class, 'update'])->middleware('permission:manage-purchases');
             Route::post('/',                   [PurchaseController::class, 'store'])->middleware('permission:manage-purchases');
 
             // Receiving & payments
@@ -175,6 +177,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/{id}',    [PurchaseClaimController::class, 'show'])->middleware('permission:manage-purchases');
             Route::post('/',       [PurchaseClaimController::class, 'store'])->middleware('permission:manage-purchases');
             Route::post('/{id}/approve', [PurchaseClaimController::class, 'approve'])->middleware('permission:manage-purchases');
+            Route::post('/{id}/receipt', [PurchaseClaimController::class, 'receipt'])->middleware('permission:manage-purchases');
             Route::post('/{id}/reject',  [PurchaseClaimController::class, 'reject'])->middleware('permission:manage-purchases');
             Route::post('/{id}/close',   [PurchaseClaimController::class, 'close'])->middleware('permission:manage-purchases');
         });

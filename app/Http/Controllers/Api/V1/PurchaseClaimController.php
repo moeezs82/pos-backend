@@ -18,7 +18,7 @@ class PurchaseClaimController extends Controller
             'purchase:id,invoice_no,vendor_id,branch_id,subtotal,total',
             'purchase.vendor:id,first_name',
             'branch:id,name'
-        ]);
+        ])->withSum('receipts as received_total', 'amount');
 
         if ($request->branch_id) {
             $query->where('branch_id', $request->branch_id);
@@ -38,8 +38,8 @@ class PurchaseClaimController extends Controller
         if ($search = $request->get('search')) {
             $query->where(function ($q) use ($search) {
                 $q->where('claim_no', 'like', "%$search%")
-                    ->orWhereHas('purchase', fn($p) => $p->where('invoice_no', 'like', "%$search%"))
-                    ->orWhereHas('purchase.vendor', fn($v) => $v->where('name', 'like', "%$search%"));
+                    ->orWhereHas('purchase', fn($p) => $p->where('invoice_no', 'like', "%$search%"));
+                    // ->orWhereHas('purchase.vendor', fn($v) => $v->where('first_name', 'like', "%$search%"));
             });
         }
 
@@ -52,7 +52,8 @@ class PurchaseClaimController extends Controller
             'purchase:id,invoice_no,vendor_id,branch_id,subtotal,total',
             'purchase.vendor:id,first_name,email,phone',
             'branch:id,name',
-            'items.product:id,name,sku'
+            'items.product:id,name,sku',
+            'receipts:id,purchase_claim_id,amount,method,reference,received_at,created_at'
         ])->findOrFail($id);
 
         return ApiResponse::success($claim);
@@ -73,6 +74,12 @@ class PurchaseClaimController extends Controller
             'items.*.remarks'          => ['nullable', 'string'],
             'items.*.batch_no'         => ['nullable', 'string'],
             'items.*.expiry_date'      => ['nullable', 'date'],
+
+            'approve_now'          => ['nullable', 'boolean'],
+            'receipt.amount'       => ['nullable', 'numeric', 'min:0.01'],
+            'receipt.method'       => ['nullable', 'string'],
+            'receipt.reference'    => ['nullable', 'string'],
+            'receipt.received_at'  => ['nullable', 'date'],
         ]);
 
         return DB::transaction(function () use ($data, $request) {
@@ -201,41 +208,68 @@ class PurchaseClaimController extends Controller
             }, $prepared);
             DB::table('purchase_claim_items')->insert($rows);
 
-            // If any lines affect stock, decrement product_stocks in ONE SQL
-            if (!empty($byProductDelta)) {
-                $productIds = array_keys($byProductDelta);
-
-                // Lock rows to prevent races
-                DB::table('product_stocks')
-                    ->where('branch_id', $purchase->branch_id)
-                    ->whereIn('product_id', $productIds)
-                    ->lockForUpdate()
-                    ->get();
-
-                $case = collect($byProductDelta)->map(function ($qty, $pid) {
-                    return "WHEN {$pid} THEN {$qty}";
-                })->implode(' ');
-
-                DB::update("
-                UPDATE product_stocks
-                SET quantity = quantity - CASE product_id {$case} END
-                WHERE branch_id = ? AND product_id IN (" . implode(',', $productIds) . ")
-            ", [$purchase->branch_id]);
-
-                // Stock movements — bulk insert (ONE query)
-                $movementRows = [];
-                foreach ($byProductDelta as $pid => $qty) {
-                    $movementRows[] = [
-                        'product_id' => $pid,
-                        'branch_id'  => $purchase->branch_id,
-                        'type'       => 'purchase-claim', // or 'adjustment'
-                        'quantity'   => -$qty,            // negative because stock reduced
-                        'reference'  => $claim->claim_no,
-                        'created_at' => now(),
-                        'updated_at' => now(),
-                    ];
+            $approveNow = (bool) ($request->boolean('approve_now'));
+            if ($approveNow) {
+                if (!empty($byProductDelta)) {
+                    $productIds = array_keys($byProductDelta);
+    
+                    // Lock rows to prevent races
+                    DB::table('product_stocks')
+                        ->where('branch_id', $purchase->branch_id)
+                        ->whereIn('product_id', $productIds)
+                        ->lockForUpdate()
+                        ->get();
+    
+                    $case = collect($byProductDelta)->map(function ($qty, $pid) {
+                        return "WHEN {$pid} THEN {$qty}";
+                    })->implode(' ');
+    
+                    DB::update("
+                    UPDATE product_stocks
+                    SET quantity = quantity - CASE product_id {$case} END
+                    WHERE branch_id = ? AND product_id IN (" . implode(',', $productIds) . ")
+                        ", [$purchase->branch_id]);
+    
+                    // Stock movements — bulk insert (ONE query)
+                    $movementRows = [];
+                    foreach ($byProductDelta as $pid => $qty) {
+                        $movementRows[] = [
+                            'product_id' => $pid,
+                            'branch_id'  => $purchase->branch_id,
+                            'type'       => 'purchase-claim', // or 'adjustment'
+                            'quantity'   => -$qty,            // negative because stock reduced
+                            'reference'  => $claim->claim_no,
+                            'created_at' => now(),
+                            'updated_at' => now(),
+                        ];
+                    }
+                    DB::table('stock_movements')->insert($movementRows);
                 }
-                DB::table('stock_movements')->insert($movementRows);
+                $claim->update(['status' => 'approved']);
+
+                $receiveAmt = (float) ($request->input('receipt.amount') ?? 0);
+                if ($receiveAmt > 0) {
+                    $receivedSoFar = (float) \App\Models\PurchaseClaimReceipt::query()
+                        ->where('purchase_claim_id', $claim->id)->sum('amount');
+                    $left = max(0, (float)$claim->total - $receivedSoFar);
+                    if ($receiveAmt > $left) {
+                        return \App\Http\Response\ApiResponse::error(
+                            "Receipt {$receiveAmt} exceeds receivable left {$left}",
+                            422
+                        );
+                    }
+
+                    \App\Models\PurchaseClaimReceipt::create([
+                        'purchase_claim_id' => $claim->id,
+                        'amount'            => $receiveAmt,
+                        'method'            => $request->input('receipt.method', 'cash'),
+                        'reference'         => $request->input('receipt.reference'),
+                        'received_at'       => $request->input('receipt.received_at'),
+                        'created_by'        => optional($request->user())->id,
+                    ]);
+
+                    // (Optional) Create vendor ledger / cashbook entry here if you maintain accounting.
+                }
             }
 
             return \App\Http\Response\ApiResponse::success(
@@ -295,7 +329,7 @@ class PurchaseClaimController extends Controller
                 StockMovement::create([
                     'product_id' => $item->product_id,
                     'branch_id'  => $claim->branch_id,
-                    'type'       => 'adjustment',     // or 'return' if you prefer
+                    'type'       => 'purchase-claim',     // or 'return' if you prefer
                     'quantity'   => -1 * (int)$item->quantity,
                     'reference'  => $claim->claim_no,
                 ]);
@@ -307,9 +341,84 @@ class PurchaseClaimController extends Controller
                 'approved_at' => now(),
             ]);
 
+            // Optional: create receipt as part of approval
+            $receivedTotal = $this->storeReceipt($claim, $request); // will no-op if no amount
+            $left = max(0, (float)$claim->total - (float)$receivedTotal);
+
             return ApiResponse::success($claim->fresh(['items.product:id,name,sku']));
         });
     }
+
+    public function receipt(Request $request, $id)
+    {
+        $request->validate([
+            'amount'      => 'required|numeric|min:0.01',
+            'method'      => 'nullable|string',
+            'reference'   => 'nullable|string',
+            'received_at' => 'nullable|date',
+        ]);
+
+        return DB::transaction(function () use ($request, $id) {
+            /** @var \App\Models\PurchaseClaim $claim */
+            $claim = PurchaseClaim::query()
+                ->where('id', $id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $receivedTotal = $this->storeReceipt($claim, $request);
+
+            return \App\Http\Response\ApiResponse::success([
+                'claim'            => $claim->fresh(['receipts']),
+                'received_total'   => round((float)$receivedTotal, 2),
+                'receivable_left'  => round(max(0, (float)$claim->total - (float)$receivedTotal), 2),
+            ], 'Receipt posted');
+        });
+    }
+
+
+    protected function storeReceipt(PurchaseClaim $claim, Request $request)
+    {
+        if ($claim->status !== 'approved') {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'status' => 'Claim must be approved before recording receipts.',
+            ]);
+        }
+
+        // Accept both shapes: approve with receipt.* OR direct endpoint amount/method/...
+        $amount = (float) ($request->input('amount') ?? data_get($request->input('receipt'), 'amount', 0));
+
+        if ($amount <= 0) {
+            // nothing to do
+            return \App\Models\PurchaseClaimReceipt::query()
+                ->where('purchase_claim_id', $claim->id)
+                ->sum('amount');
+        }
+
+        $received = (float) \App\Models\PurchaseClaimReceipt::query()
+            ->where('purchase_claim_id', $claim->id)
+            ->sum('amount');
+
+        $left = max(0, (float)$claim->total - $received);
+        if ($amount > $left) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'amount' => "Amount {$amount} exceeds receivable left {$left}.",
+            ]);
+        }
+
+        \App\Models\PurchaseClaimReceipt::create([
+            'purchase_claim_id' => $claim->id,
+            'amount'            => $amount,
+            'method'            => $request->input('method') ?? data_get($request->input('receipt'), 'method', 'cash'),
+            'reference'         => $request->input('reference') ?? data_get($request->input('receipt'), 'reference'),
+            'received_at'       => $request->input('received_at') ?? data_get($request->input('receipt'), 'received_at'),
+            'created_by'        => optional($request->user())->id,
+        ]);
+
+        // (Optional) Vendor accounting / cashbook entry here.
+
+        return $received + $amount;
+    }
+
 
     public function reject($id, Request $request)
     {

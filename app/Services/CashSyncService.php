@@ -5,6 +5,8 @@ namespace App\Services;
 use App\Models\Account;
 use App\Models\CashTransaction;
 use App\Models\PaymentMethodAccount;
+use App\Models\PurchaseClaimReceipt;
+use App\Models\SaleReturnRefund;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\ValidationException;
 
@@ -144,5 +146,151 @@ class CashSyncService
             'counterparty_id'   => $data['counterparty_id'] ?? null,
             // Not linked to a source doc; leave source_type/source_id null
         ]);
+    }
+
+    public function postSaleReturnRefund(array $data): \App\Models\CashTransaction
+    {
+        // $data: saleReturn (model), amount, method, reference?, date?, branch_id?
+        $sr = $data['saleReturn'];
+        $amount = (float)$data['amount'];
+        if ($amount <= 0) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['amount' => 'Amount must be > 0']);
+        }
+
+        // Optional: prevent duplicate posting for same return if you want only one
+        $exists = \App\Models\CashTransaction::query()
+            ->where('source_type', \App\Models\SaleReturn::class)
+            ->where('source_id', $sr->id)
+            ->where('type', 'payment')
+            ->exists();
+        if ($exists) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['cash' => 'Refund already posted for this return.']);
+        }
+
+        $method  = $data['method'] ?? 'cash';
+        $branchId = $data['branch_id'] ?? $sr->branch_id;
+        $account = $this->mapMethodToAccount($method, $branchId);
+
+        return \App\Models\CashTransaction::create([
+            'txn_date'   => ($data['date'] ?? now())->toDateString(),
+            'account_id' => $account->id,
+            'branch_id'  => $branchId,
+            'type'       => 'payment', // money OUT
+            'amount'     => $amount,
+            'method'     => $method,
+            'reference'  => $data['reference'] ?? $sr->return_no,
+            'note'       => 'Sale return refund',
+            'status'     => 'approved',
+            'created_by' => auth()->id(),
+            'source_type' => \App\Models\SaleReturn::class,
+            'source_id'  => $sr->id,
+            'counterparty_type' => \App\Models\Customer::class,
+            'counterparty_id'   => $sr->customer_id,
+            'voucher_no' => null,
+            'meta'       => $data['meta'] ?? null,
+        ]);
+    }
+
+    public function postPurchaseClaimReceipt(array $data): \App\Models\CashTransaction
+    {
+        // $data: claim (model), amount, method, reference?, date?, branch_id?
+        $claim = $data['claim'];
+        $amount = (float)$data['amount'];
+        if ($amount <= 0) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['amount' => 'Amount must be > 0']);
+        }
+
+        // Optional: prevent duplicate posting if you want only one
+        $exists = \App\Models\CashTransaction::query()
+            ->where('source_type', \App\Models\PurchaseClaim::class)
+            ->where('source_id', $claim->id)
+            ->where('type', 'receipt')
+            ->exists();
+        if ($exists) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['cash' => 'Receipt already posted for this claim.']);
+        }
+
+        $method  = $data['method'] ?? 'cash';
+        $branchId = $data['branch_id'] ?? $claim->branch_id;
+        $account = $this->mapMethodToAccount($method, $branchId);
+
+        return \App\Models\CashTransaction::create([
+            'txn_date'   => ($data['date'] ?? now())->toDateString(),
+            'account_id' => $account->id,
+            'branch_id'  => $branchId,
+            'type'       => 'receipt', // money IN
+            'amount'     => $amount,
+            'method'     => $method,
+            'reference'  => $data['reference'] ?? $claim->claim_no,
+            'note'       => 'Purchase claim receipt',
+            'status'     => 'approved',
+            'created_by' => auth()->id(),
+            'source_type' => \App\Models\PurchaseClaim::class,
+            'source_id'  => $claim->id,
+            'counterparty_type' => \App\Models\Vendor::class,
+            'counterparty_id'   => $claim->vendor_id,
+            'voucher_no' => null,
+            'meta'       => $data['meta'] ?? null,
+        ]);
+    }
+
+    public function syncFromSaleReturnRefund(SaleReturnRefund $refund, ?int $branchId = null): CashTransaction
+    {
+        $method  = $refund->method ?: 'cash';
+        $account = $this->mapMethodToAccount($method, $branchId);
+
+        $sr  = $refund->saleReturn; // has branch_id, customer_id
+        $txn = CashTransaction::create([
+            'txn_date'   => optional($refund->refunded_at)->toDateString() ?? now()->toDateString(),
+            'account_id' => $account->id,
+            'branch_id'  => $branchId ?? optional($sr)->branch_id,
+            'type'       => 'payment', // MONEY OUT (refund to customer)
+            'amount'     => $refund->amount,
+            'method'     => $method,
+            'reference'  => $refund->reference ?: 'Return#' . $refund->sale_return_id,
+            'note'       => 'Sale return refund',
+            'status'     => 'approved',
+            'created_by' => $refund->created_by ?: Auth::id(),
+            'source_type' => get_class($refund),
+            'source_id'  => $refund->id,
+            'counterparty_type' => \App\Models\Customer::class,
+            'counterparty_id'   => optional($sr)->customer_id,
+            'voucher_no' => null,
+        ]);
+
+        $refund->cash_transaction_id = $txn->id;
+        $refund->save();
+
+        return $txn;
+    }
+
+    public function syncFromPurchaseClaimReceipt(PurchaseClaimReceipt $receipt, ?int $branchId = null): CashTransaction
+    {
+        $method  = $receipt->method ?: 'cash';
+        $account = $this->mapMethodToAccount($method, $branchId);
+
+        $pc  = $receipt->purchaseClaim; // has branch_id, vendor_id
+        $txn = CashTransaction::create([
+            'txn_date'   => optional($receipt->received_at)->toDateString() ?? now()->toDateString(),
+            'account_id' => $account->id,
+            'branch_id'  => $branchId ?? optional($pc)->branch_id,
+            'type'       => 'receipt', // MONEY IN (vendor pays back)
+            'amount'     => $receipt->amount,
+            'method'     => $method,
+            'reference'  => $receipt->reference ?: 'Claim#' . $receipt->purchase_claim_id,
+            'note'       => 'Purchase claim receipt',
+            'status'     => 'approved',
+            'created_by' => $receipt->created_by ?: Auth::id(),
+            'source_type' => get_class($receipt),
+            'source_id'  => $receipt->id,
+            'counterparty_type' => \App\Models\Vendor::class,
+            'counterparty_id'   => optional($pc)->vendor_id,
+            'voucher_no' => null,
+        ]);
+
+        $receipt->cash_transaction_id = $txn->id;
+        $receipt->save();
+
+        return $txn;
     }
 }

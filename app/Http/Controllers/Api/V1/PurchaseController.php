@@ -24,6 +24,12 @@ class PurchaseController extends Controller
         if ($request->filled('vendor_id')) {
             $query->where('vendor_id', $request->vendor_id);
         }
+        if ($request->filled('date_from')) {
+            $query->whereDate('created_at', '>=', $request->date_from);
+        }
+        if ($request->filled('date_to')) {
+            $query->whereDate('created_at', '<=', $request->date_to);
+        }
         if ($request->filled('search')) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -44,6 +50,49 @@ class PurchaseController extends Controller
         $purchases = $query->paginate($request->get('per_page', 15));
 
         return ApiResponse::success($purchases);
+    }
+
+    public function update(Request $request, $id)
+    {
+        $data = $request->validate([
+            'discount' => 'nullable|numeric|min:0',
+            'tax'      => 'nullable|numeric|min:0',
+        ]);
+
+        $purchase = Purchase::with(['items', 'payments'])->findOrFail($id);
+
+        return DB::transaction(function () use ($purchase, $data) {
+            // Recompute subtotal from existing items
+            $subtotal = $purchase->items->sum(function ($i) {
+                return ((float) $i->quantity) * ((float) $i->price);
+            });
+
+            // New discount/tax (fallback to current values if not provided)
+            $discount = array_key_exists('discount', $data)
+                ? (float) $data['discount']
+                : (float) $purchase->discount;
+
+            $tax = array_key_exists('tax', $data)
+                ? (float) $data['tax']
+                : (float) $purchase->tax;
+
+            // Compute total (never below zero)
+            $total = max(0, $subtotal - $discount + $tax);
+
+            // Persist
+            $purchase->update([
+                'subtotal' => round($subtotal, 2),
+                'discount' => round($discount, 2),
+                'tax'      => round($tax, 2),
+                'total'    => round($total, 2),
+            ]);
+
+            // Re-evaluate status after totals change
+            $this->updatePaymentStatus($purchase);
+
+            // Return fresh copy
+            return ApiResponse::success($purchase->fresh(['items', 'payments']));
+        });
     }
 
     public function show(Purchase $purchase)
@@ -192,7 +241,7 @@ class PurchaseController extends Controller
 
             $this->updateReceiveStatus($purchase->fresh('items'));
 
-            return ApiResponse::success(['purchase'=>$purchase]);
+            return ApiResponse::success(['purchase' => $purchase]);
         });
     }
 
