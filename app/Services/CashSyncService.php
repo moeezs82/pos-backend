@@ -85,7 +85,24 @@ class CashSyncService
         $pp->cash_transaction_id = $txn->id;
         $pp->save();
 
+        $this->postAPSettlementToGL($pp, $account->code);
+
         return $txn;
+    }
+
+    private function postAPSettlementToGL($pp, string $cashBankAccountCode): void
+    {
+        app(\App\Services\AccountingService::class)->post(
+            branchId: optional($pp->purchase)->branch_id,
+            memo: "Purchase Payment #{$pp->id} for {$pp->purchase_id}",
+            reference: $pp,
+            lines: [
+                ['account_code' => '2000',              'debit' => (float)$pp->amount, 'credit' => 0], // AP
+                ['account_code' => $cashBankAccountCode, 'debit' => 0,                  'credit' => (float)$pp->amount], // Cash/Bank
+            ],
+            entryDate: optional($pp->paid_at)->toDateString() ?? now()->toDateString(),
+            userId: auth()->id()
+        );
     }
 
     public function resync(CashTransaction $txn, array $fields): CashTransaction

@@ -6,13 +6,6 @@ use Illuminate\Database\Eloquent\Model;
 
 class Account extends Model
 {
-    protected $fillable = ['name', 'code', 'type', 'branch_id', 'is_active'];
-    public function branch()
-    {
-        return $this->belongsTo(Branch::class);
-    }
-    public function transactions()
-    {
-        return $this->hasMany(CashTransaction::class);
-    }
+    protected $guarded = [];
+    public function type(){ return $this->belongsTo(AccountType::class,'account_type_id'); }
 }

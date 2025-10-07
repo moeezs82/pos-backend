@@ -61,4 +61,9 @@ class Sale extends Model
     {
         return $this->total - $this->paid_amount;
     }
+
+    public function journalEntries()
+    {
+        return $this->morphMany(JournalEntry::class, 'reference');
+    }
 }

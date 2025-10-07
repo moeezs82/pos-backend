@@ -4,14 +4,9 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 
-class Purchase extends Model
+class VendorPayment extends Model
 {
     protected $guarded = [];
-
-    protected $casts = [
-        'expected_at' => 'datetime',
-    ];
-
     public function vendor()
     {
         return $this->belongsTo(Vendor::class);
@@ -20,15 +15,10 @@ class Purchase extends Model
     {
         return $this->belongsTo(Branch::class);
     }
-    public function items()
+    public function allocations()
     {
-        return $this->hasMany(PurchaseItem::class);
+        return $this->hasMany(VendorPaymentAllocation::class);
     }
-    public function payments()
-    {
-        return $this->hasMany(PurchasePayment::class);
-    }
-
     public function journalEntries()
     {
         return $this->morphMany(JournalEntry::class, 'reference');

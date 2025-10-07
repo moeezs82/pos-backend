@@ -69,132 +69,102 @@ class SaleController extends Controller
         return ApiResponse::success($sale);
     }
 
-    public function update(Request $request, $id)
-    {
-        // Only allow updating discount & tax from this endpoint (as per your UI)
-        $data = $request->validate([
-            'discount' => 'nullable|numeric|min:0',
-            'tax'      => 'nullable|numeric|min:0',
-        ]);
-
-        // Load sale with items once
-        $sale = Sale::with(['items', 'payments'])->findOrFail($id);
-
-        // Optional: block edits for certain statuses (adjust to your app’s statuses)
-        if (in_array($sale->status, ['cancelled', 'void', 'returned'])) {
-            return ApiResponse::error("This sale can't be edited in its current status.", 422);
-        }
-
-        return DB::transaction(function () use ($sale, $data) {
-            // Recompute subtotal from existing items
-            $subtotal = $sale->items->sum(function ($i) {
-                return ((float) $i->quantity) * ((float) $i->price);
-            });
-
-            // New discount/tax (fallback to current values if not provided)
-            $discount = array_key_exists('discount', $data)
-                ? (float) $data['discount']
-                : (float) $sale->discount;
-
-            $tax = array_key_exists('tax', $data)
-                ? (float) $data['tax']
-                : (float) $sale->tax;
-
-            // Compute total (never below zero)
-            $total = max(0, $subtotal - $discount + $tax);
-
-            // Persist
-            $sale->update([
-                'subtotal' => round($subtotal, 2),
-                'discount' => round($discount, 2),
-                'tax'      => round($tax, 2),
-                'total'    => round($total, 2),
-            ]);
-
-            // Re-evaluate status after totals change
-            $this->updateSaleStatus($sale);
-
-            // Return fresh copy
-            return ApiResponse::success($sale->fresh(['items', 'payments']));
-        });
-    }
-
     public function store(Request $request)
     {
         $data = $request->validate([
             'customer_id' => 'nullable|exists:customers,id',
-            'vendor_id' => 'nullable|exists:vendors,id',
+            'vendor_id'   => 'nullable|exists:vendors,id',
             'salesman_id' => 'nullable|exists:users,id',
-            'created_by' => 'nullable|exists:users,id',
+            'created_by'  => 'nullable|exists:users,id',
             'branch_id'   => 'required|exists:branches,id',
             'items'       => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
             'items.*.quantity'   => 'required|integer|min:1',
             'items.*.price'      => 'required|numeric|min:0',
-            'discount'    => 'numeric|min:0',
-            'tax'         => 'numeric|min:0',
-            'payments'    => 'array'
+            'discount'    => 'nullable|numeric|min:0',
+            'tax'         => 'nullable|numeric|min:0',
+            'payments'    => 'array', // optional receipts info
         ]);
 
         $branchId = $data['branch_id'];
 
-        // ✅ Validate stock with helper
-        // $validation = $this->validateStock($branchId, $data['items']);
-        // if (!$validation['ok']) {
-        //     return ApiResponse::error($validation['message'], 422);
-        // }
-
         return DB::transaction(function () use ($data, $branchId) {
+            // totals
             $subtotal = collect($data['items'])->sum(fn($i) => $i['quantity'] * $i['price']);
-            $total = $subtotal - ($data['discount'] ?? 0) + ($data['tax'] ?? 0);
+            $discount = (float)($data['discount'] ?? 0);
+            $tax      = (float)($data['tax'] ?? 0);
+            $total    = max(0, round($subtotal - $discount + $tax, 2));
 
+            // create sale header
             $sale = Sale::create([
-                'invoice_no' => 'INV-' . time(),
+                'invoice_no'  => 'INV-' . time(),
                 'customer_id' => $data['customer_id'] ?? null,
-                'vendor_id' => $data['vendor_id'] ?? null,
+                'vendor_id'   => $data['vendor_id'] ?? null,
                 'salesman_id' => $data['salesman_id'] ?? null,
-                'created_by' => $data['created_by'] ?? auth()->id(),
-                'branch_id'  => $branchId,
-                'subtotal'   => $subtotal,
-                'discount'   => $data['discount'] ?? 0,
-                'tax'        => $data['tax'] ?? 0,
-                'total'      => $total,
+                'created_by'  => $data['created_by'] ?? auth()->id(),
+                'branch_id'   => $branchId,
+                'subtotal'    => round($subtotal, 2),
+                'discount'    => round($discount, 2),
+                'tax'         => round($tax, 2),
+                'total'       => $total,
+                'status'      => 'pending',
             ]);
 
+            // create items (do not duplicate stock decrement here — handled by deductStockAndStampCosts)
             foreach ($data['items'] as $item) {
                 $sale->items()->create([
                     'product_id' => $item['product_id'],
-                    'quantity'   => $item['quantity'],
-                    'price'      => $item['price'],
-                    'total'      => $item['quantity'] * $item['price'],
-                ]);
-
-                // Deduct stock
-                DB::table('product_stocks')
-                    ->where('product_id', $item['product_id'])
-                    ->where('branch_id', $branchId)
-                    ->decrement('quantity', $item['quantity']);
-
-                StockMovement::create([
-                    'product_id' => $item['product_id'],
-                    'branch_id'  => $branchId,
-                    'type'       => 'sale',
-                    'quantity'   => -$item['quantity'],
-                    'reference'  => $sale->invoice_no,
+                    'quantity'   => (int)$item['quantity'],
+                    'price'      => (float)$item['price'],
+                    'total'      => round($item['quantity'] * $item['price'], 2),
+                    // unit_cost/line_cost will be set by deductStockAndStampCosts
                 ]);
             }
 
-            if (!empty($data['payments'])) {
-                foreach ($data['payments'] as $payment) {
-                    $sale->payments()->create($payment);
+            // Deduct stock, stamp costs (sets unit_cost & line_cost on items) and update sale.cogs/gross_profit
+            // This method uses InventoryValuationService->avgCost(...) and writes unit_cost/line_cost, product_stocks, stock movements
+            app(\App\Services\SalePostingService::class)->deductStockAndStampCosts($sale->fresh('items'));
+
+            // Post Sales JE (AR / Revenue / Tax / COGS / Inventory)
+            app(\App\Services\SalePostingService::class)->postSale($sale->fresh('items'));
+
+            // Optional immediate receipts/payments
+            $createdReceipts = [];
+            foreach (($data['payments'] ?? []) as $payment) {
+                // auto-allocate to this sale if allocations missing
+                $allocations = $payment['allocations'] ?? null;
+                if (empty($allocations)) {
+                    $allocations = [
+                        ['sale_id' => $sale->id, 'amount' => min((float)$payment['amount'], (float)$sale->total)]
+                    ];
                 }
+
+                $receiptPayload = [
+                    'customer_id' => $sale->customer_id,
+                    'branch_id'   => $sale->branch_id,
+                    'received_at' => $payment['paid_at'] ?? now()->toDateString(),
+                    'method'      => $payment['method'] ?? 'cash',
+                    'amount'      => (float)$payment['amount'],
+                    'reference'   => $payment['reference'] ?? null,
+                    'note'        => $payment['note'] ?? null,
+                    'allocations' => $allocations,
+                ];
+
+                $createdReceipts[] = app(\App\Services\CustomerPaymentService::class)->create($receiptPayload);
             }
 
+            // Update UI labels/statuses
             $this->updateSaleStatus($sale);
+            // $this->updatePaymentStatus($sale);
 
-            return ApiResponse::success($sale->load('items', 'payments'));
+            return ApiResponse::success([
+                'sale' => $sale->fresh(['items', 'payments']),
+                'receipts' => $createdReceipts ?: null,
+            ], 'Sale created and posted to ledger');
         });
     }
+
+
 
     // Helper to update status
     protected function updateSaleStatus(Sale $sale)
@@ -208,6 +178,74 @@ class SaleController extends Controller
             $sale->update(['status' => 'pending']);
         }
     }
+
+    public function update(Request $request, $id)
+    {
+        // Only allow updating discount & tax from this endpoint (as per your UI)
+        $data = $request->validate([
+            'discount' => 'nullable|numeric|min:0',
+            'tax'      => 'nullable|numeric|min:0',
+        ]);
+
+        $sale = Sale::with(['items', 'payments'])->findOrFail($id);
+
+        // Block edits on finalised/cancelled sales
+        if (in_array($sale->status, ['cancelled', 'void', 'returned'])) {
+            return ApiResponse::error("This sale can't be edited in its current status.", 422);
+        }
+
+        return DB::transaction(function () use ($sale, $data) {
+            // Snapshot old totals BEFORE change
+            $old = [
+                'subtotal' => (float)$sale->subtotal,
+                'discount' => (float)$sale->discount,
+                'tax'      => (float)$sale->tax,
+                'total'    => (float)$sale->total,
+            ];
+
+            // Recompute subtotal from items (items not edited here)
+            $subtotal = $sale->items->sum(fn($i) => ((float)$i->quantity) * ((float)$i->price));
+
+            $discount = array_key_exists('discount', $data) ? (float)$data['discount'] : (float)$sale->discount;
+            $tax      = array_key_exists('tax', $data)      ? (float)$data['tax']      : (float)$sale->tax;
+
+            $total = max(0, round($subtotal - $discount + $tax, 2));
+
+            // Persist new totals
+            $sale->update([
+                'subtotal' => round($subtotal, 2),
+                'discount' => round($discount, 2),
+                'tax'      => round($tax, 2),
+                'total'    => $total,
+            ]);
+
+            // Recompute gross profit using existing cogs stored on sale (items unchanged)
+            $cogs = (float)$sale->cogs; // assumes cogs was previously set by deductStockAndStampCosts
+            $sale->update([
+                'gross_profit' => round($total - $cogs, 2),
+            ]);
+
+            // Post delta JE to adjust ledger (mirrors PurchaseAdjustmentService behaviour)
+            app(\App\Services\SaleAdjustmentService::class)->postSaleAdjustment(
+                $sale->fresh(['items']),
+                $old,
+                [
+                    'subtotal' => round($subtotal, 2),
+                    'discount' => round($discount, 2),
+                    'tax'      => round($tax, 2),
+                    'total'    => $total,
+                ],
+                now()->toDateString()
+            );
+
+            // Optional: recompute payment/allocation statuses for UI
+            // $this->updatePaymentStatus($sale);
+            $this->updateSaleStatus($sale);
+
+            return ApiResponse::success($sale->fresh(['items', 'payments']), 'Sale updated and ledger adjusted');
+        });
+    }
+
 
     protected function validateStock(int $branchId, array $items): array
     {

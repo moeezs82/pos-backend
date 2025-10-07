@@ -43,4 +43,9 @@ class Product extends Model
     {
         return $this->hasMany(ProductStock::class);
     }
+
+    public function journalEntries()
+    {
+        return $this->morphMany(JournalEntry::class, 'reference');
+    }
 }

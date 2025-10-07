@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
 use App\Models\Purchase;
 use App\Models\StockMovement;
+use App\Services\VendorPaymentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -59,27 +60,26 @@ class PurchaseController extends Controller
             'tax'      => 'nullable|numeric|min:0',
         ]);
 
-        $purchase = Purchase::with(['items', 'payments'])->findOrFail($id);
+        $purchase = Purchase::with(['items'])->findOrFail($id);
 
         return DB::transaction(function () use ($purchase, $data) {
-            // Recompute subtotal from existing items
-            $subtotal = $purchase->items->sum(function ($i) {
-                return ((float) $i->quantity) * ((float) $i->price);
-            });
+            // Snapshot old totals BEFORE change
+            $old = [
+                'subtotal' => (float)$purchase->subtotal,
+                'discount' => (float)$purchase->discount,
+                'tax'      => (float)$purchase->tax,
+                'total'    => (float)$purchase->total,
+            ];
 
-            // New discount/tax (fallback to current values if not provided)
-            $discount = array_key_exists('discount', $data)
-                ? (float) $data['discount']
-                : (float) $purchase->discount;
+            // Recompute subtotal from current items (no edits to items in this endpoint)
+            $subtotal = $purchase->items->sum(fn($i) => ((float)$i->quantity) * ((float)$i->price));
 
-            $tax = array_key_exists('tax', $data)
-                ? (float) $data['tax']
-                : (float) $purchase->tax;
+            $discount = array_key_exists('discount', $data) ? (float)$data['discount'] : (float)$purchase->discount;
+            $tax      = array_key_exists('tax', $data) ? (float)$data['tax']      : (float)$purchase->tax;
 
-            // Compute total (never below zero)
             $total = max(0, $subtotal - $discount + $tax);
 
-            // Persist
+            // Persist new totals
             $purchase->update([
                 'subtotal' => round($subtotal, 2),
                 'discount' => round($discount, 2),
@@ -87,11 +87,23 @@ class PurchaseController extends Controller
                 'total'    => round($total, 2),
             ]);
 
-            // Re-evaluate status after totals change
+            // Post delta JE
+            app(\App\Services\PurchaseAdjustmentService::class)->postBillAdjustment(
+                p: $purchase->fresh(['items']),
+                old: $old,
+                new: [
+                    'subtotal' => round($subtotal, 2),
+                    'discount' => round($discount, 2),
+                    'tax'      => round($tax, 2),
+                    'total'    => round($total, 2),
+                ],
+                date: now()->toDateString()
+            );
+
+            // Optional: recompute payment status, if you keep that UI label
             $this->updatePaymentStatus($purchase);
 
-            // Return fresh copy
-            return ApiResponse::success($purchase->fresh(['items', 'payments']));
+            return ApiResponse::success($purchase->fresh(['items']), 'Purchase updated');
         });
     }
 
@@ -102,12 +114,12 @@ class PurchaseController extends Controller
     }
 
     /* ===================== Create PO ===================== */
-
-    public function store(Request $request)
+    public function store(Request $request, VendorPaymentService $vendorPaymentService)
     {
         $data = $request->validate([
             'vendor_id' => 'required|exists:vendors,id',
             'branch_id' => 'required|exists:branches,id',
+            'invoice_date' => 'nullable|date',
             'items' => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
             'items.*.quantity'   => 'required|integer|min:1',
@@ -117,74 +129,106 @@ class PurchaseController extends Controller
             'expected_at' => 'nullable|date',
             'notes'    => 'nullable|string',
             'receive_now' => 'boolean',
-            'items.*.received_qty' => 'nullable|integer|min:0', // used only if receive_now = true
-            'payments' => 'array',
-            'payments.*.method' => 'nullable|string',
-            'payments.*.amount' => 'required_with:payments|numeric|min:0.01',
-            'payments.*.tx_ref' => 'nullable|string',
-            'payments.*.paid_at' => 'nullable|date',
-            'payments.*.meta'   => 'nullable|array',
+            'items.*.received_qty' => 'nullable|integer|min:0',
+
+            // optional payment block
+            'payment' => 'nullable|array',
+            'payment.method' => 'required_with:payment|string|in:cash,bank,card,wallet',
+            'payment.amount' => 'required_with:payment|numeric|min:0.01',
+            'payment.paid_at' => 'nullable|date',
+            'payment.reference' => 'nullable|string',
+            'payment.note' => 'nullable|string',
+            'payment.allocations' => 'array',
+            'payment.allocations.*.purchase_id' => 'required_with:payment.allocations|exists:purchases,id',
+            'payment.allocations.*.amount'      => 'required_with:payment.allocations|numeric|min:0.01',
         ]);
 
-        $branchId   = (int) $data['branch_id'];
-        $receiveNow = (bool) ($data['receive_now'] ?? false);
+        $receiveNow = (bool)($data['receive_now'] ?? false);
 
-        return DB::transaction(function () use ($data, $branchId, $receiveNow) {
+        return DB::transaction(function () use ($data, $receiveNow, $vendorPaymentService) {
             $subtotal = collect($data['items'])->sum(fn($i) => $i['quantity'] * $i['price']);
-            $total    = $subtotal - ($data['discount'] ?? 0) + ($data['tax'] ?? 0);
+            $total    = max(0, $subtotal - ($data['discount'] ?? 0) + ($data['tax'] ?? 0));
 
-            $purchase = Purchase::create([
+            $p = Purchase::create([
                 'invoice_no'     => $this->generateNumber('PUR'),
                 'vendor_id'      => $data['vendor_id'],
-                'branch_id'      => $branchId,
-                'subtotal'       => $subtotal,
-                'discount'       => $data['discount'] ?? 0,
-                'tax'            => $data['tax'] ?? 0,
-                'total'          => $total,
-                'status'         => 'pending',   // payment status
+                'branch_id'      => $data['branch_id'],
+                'invoice_date'   => $data['invoice_date'] ?? now()->toDateString(),
+                'subtotal'       => round($subtotal, 2),
+                'discount'       => round($data['discount'] ?? 0, 2),
+                'tax'            => round($data['tax'] ?? 0, 2),
+                'total'          => round($total, 2),
+                'status'         => 'pending',
                 'receive_status' => $receiveNow ? 'partial' : 'ordered',
                 'expected_at'    => $data['expected_at'] ?? null,
                 'notes'          => $data['notes'] ?? null,
+                'created_by'     => auth()->id(),
             ]);
 
-            foreach ($data['items'] as $item) {
-                $row = $purchase->items()->create([
-                    'product_id'   => $item['product_id'],
-                    'quantity'     => (int)$item['quantity'],
+            // create items and optionally receive immediately
+            $receiveRows = [];
+            foreach ($data['items'] as $row) {
+                $item = $p->items()->create([
+                    'product_id'   => $row['product_id'],
+                    'quantity'     => (int)$row['quantity'],
                     'received_qty' => 0,
-                    'price'        => (float)$item['price'],
-                    'total'        => (int)$item['quantity'] * (float)$item['price'],
+                    'price'        => (float)$row['price'],
+                    'total'        => (float)$row['quantity'] * (float)$row['price'],
                 ]);
 
-                if ($receiveNow) {
-                    $rcv = isset($item['received_qty']) ? (int)$item['received_qty'] : (int)$item['quantity'];
-                    $rcv = max(0, min($rcv, (int)$item['quantity'])); // clamp
-                    if ($rcv > 0) {
-                        $this->incrementStock($item['product_id'], $branchId, $rcv);
-
-                        $row->update(['received_qty' => $rcv]);
-
-                        StockMovement::create([
-                            'product_id' => $item['product_id'],
-                            'branch_id'  => $branchId,
-                            'type'       => 'purchase',
-                            'quantity'   => $rcv,
-                            'reference'  => $purchase->invoice_no,
-                        ]);
-                    }
+                $toReceive = (int) $row['quantity'];
+                if ($toReceive > 0) {
+                    $receiveRows[] = [
+                        'item_id'     => $item->id,
+                        'receive_qty' => $toReceive,
+                    ];
                 }
+
+                // receive immediately (updates stock + avg_cost + movement only)
+                app(\App\Services\InventoryValuationWriteService::class)->receivePurchase(
+                    productId: $item->product_id,
+                    branchId: $p->branch_id,
+                    receiveQty: $item->quantity,
+                    unitPrice: $item->price,
+                    ref: $p->invoice_no
+                );
             }
 
-            // Payments (optional on creation)
-            if (!empty($data['payments'])) {
-                foreach ($data['payments'] as $pay) {
-                    $purchase->payments()->create($pay);
+            // Post the **vendor bill** to GL (AP)
+            app(\App\Services\PurchasePostingService::class)->postVendorBill($p, $p->invoice_date);
+
+            // OPTIONAL: process immediate vendor payment (if provided)
+            $payment = $data['payment'] ?? null;
+            $vp = null;
+            if ($payment && (float)$payment['amount'] > 0) {
+                // If allocations not provided, auto-allocate the payment to this purchase
+                $allocations = $payment['allocations'] ?? null;
+                if (empty($allocations)) {
+                    $allocations = [
+                        ['purchase_id' => $p->id, 'amount' => min((float)$payment['amount'], (float)$p->total)]
+                    ];
                 }
+
+                $vpData = [
+                    'vendor_id'   => $p->vendor_id,
+                    'branch_id'   => $p->branch_id,
+                    'paid_at'     => $payment['paid_at'] ?? now()->toDateString(),
+                    'method'      => $payment['method'],
+                    'amount'      => $payment['amount'],
+                    'reference'   => $payment['reference'] ?? null,
+                    'note'        => $payment['note'] ?? null,
+                    'allocations' => $allocations,
+                ];
+
+                // Use the reusable service
+                $vp = $vendorPaymentService->create($vpData);
             }
 
-            $this->recalculatePurchase($purchase->fresh());
-
-            return ApiResponse::success(['purchase' => $purchase], 'Purchase created successfully');
+            // return both purchase and optional payment for UI
+            return ApiResponse::success([
+                'purchase' => $p->load('items'),
+                'vendor_payment' => $vp ? $vp->load('allocations') : null,
+            ], 'Purchase created');
         });
     }
 
@@ -303,38 +347,59 @@ class PurchaseController extends Controller
     public function addItem(Request $request, Purchase $purchase)
     {
         $data = $request->validate([
-            'product_id'   => 'required|exists:products,id',
-            'quantity'     => 'required|integer|min:1',
-            'price'        => 'required|numeric|min:0',
-            'received_qty' => 'nullable|integer|min:0', // optional spot receive
+            'product_id' => 'required|exists:products,id',
+            'quantity'   => 'required|integer|min:1',
+            'price'      => 'required|numeric|min:0',
         ]);
 
         $branchId = (int) $purchase->branch_id;
 
         return DB::transaction(function () use ($purchase, $data, $branchId) {
-            $rcv = (int) ($data['received_qty'] ?? 0);
-            $rcv = max(0, min($rcv, (int)$data['quantity'])); // clamp
+            // Snapshot old totals
+            $old = [
+                'subtotal' => (float)$purchase->subtotal,
+                'discount' => (float)$purchase->discount,
+                'tax'      => (float)$purchase->tax,
+                'total'    => (float)$purchase->total,
+            ];
 
+            // Create line (ordered == received now)
             $item = $purchase->items()->create([
-                'product_id'   => $data['product_id'],
-                'quantity'     => (int)$data['quantity'],
-                'received_qty' => $rcv,
-                'price'        => (float)$data['price'],
-                'total'        => (int)$data['quantity'] * (float)$data['price'],
+                'product_id' => (int)$data['product_id'],
+                'quantity'   => (int)$data['quantity'],
+                'price'      => (float)$data['price'],
+                'total'      => (float)$data['quantity'] * (float)$data['price'],
             ]);
 
-            if ($rcv > 0) {
-                $this->incrementStock($data['product_id'], $branchId, +$rcv);
-                StockMovement::create([
-                    'product_id' => $data['product_id'],
-                    'branch_id'  => $branchId,
-                    'type'       => 'purchase',
-                    'quantity'   => $rcv,
-                    'reference'  => $purchase->invoice_no,
-                ]);
-            }
+            // Receive into stock at line price (affects avg_cost)
+            app(\App\Services\InventoryValuationWriteService::class)->receivePurchase(
+                productId: $item->product_id,
+                branchId: $branchId,
+                receiveQty: $item->quantity,
+                unitPrice: $item->price,
+                ref: $purchase->invoice_no
+            );
 
-            $this->recalculatePurchase($purchase->fresh());
+            // Recompute purchase totals
+            $subtotal = $purchase->items()->sum(DB::raw('quantity * price'));
+            $total    = max(0, $subtotal - $purchase->discount + $purchase->tax);
+            $purchase->update([
+                'subtotal' => round($subtotal, 2),
+                'total'    => round($total, 2),
+            ]);
+
+            // Post delta JE (goods to Inventory, AP opposite; tax handled by header edits if any)
+            app(\App\Services\AccountingService::class)->post(
+                branchId: $purchase->branch_id,
+                memo: "Purchase #{$purchase->invoice_no} - add item",
+                reference: $purchase,
+                lines: [
+                    ['account_code' => '1400', 'debit' => $item->total, 'credit' => 0],              // Inventory
+                    ['account_code' => '2000', 'debit' => 0, 'credit' => $item->total],              // AP
+                ],
+                entryDate: now()->toDateString(),
+                userId: auth()->id()
+            );
 
             return ApiResponse::success(['item' => $item], 'Item added');
         });
@@ -343,47 +408,120 @@ class PurchaseController extends Controller
     public function updateItem(Request $request, Purchase $purchase, $itemId)
     {
         $data = $request->validate([
-            'quantity'     => 'sometimes|integer|min:1',
-            'price'        => 'sometimes|numeric|min:0',
-            'received_qty' => 'nullable|integer|min:0',
+            'quantity' => 'sometimes|integer|min:1',
+            'price'    => 'sometimes|numeric|min:0',
         ]);
 
         $branchId = (int) $purchase->branch_id;
 
         return DB::transaction(function () use ($purchase, $itemId, $data, $branchId) {
-            $item = $purchase->items()->findOrFail($itemId);
+            $item = $purchase->items()->lockForUpdate()->findOrFail($itemId);
 
-            $oldQty = (int)$item->quantity;
-            $oldRcv = (int)$item->received_qty;
-            $oldPrice = (float)$item->price;
+            // Snapshot BEFORE
+            $oldQty   = (int)   $item->quantity;
+            $oldPrice = (float) $item->price;
+            $oldSub   = (float) $purchase->subtotal;
+            $oldTot   = (float) $purchase->total;
 
-            $newQty = isset($data['quantity']) ? (int)$data['quantity'] : $oldQty;
-            $newPrice = isset($data['price']) ? (float)$data['price'] : $oldPrice;
-            $newRcv = isset($data['received_qty']) ? (int)$data['received_qty'] : $oldRcv;
-            $newRcv = max(0, min($newRcv, $newQty)); // clamp to new qty
+            // New values (default to old)
+            $newQty   = array_key_exists('quantity', $data) ? (int)$data['quantity'] : $oldQty;
+            $newPrice = array_key_exists('price',   $data) ? (float)$data['price']   : $oldPrice;
 
-            // Update row
-            $item->update([
-                'quantity'     => $newQty,
-                'price'        => $newPrice,
-                'total'        => $newQty * $newPrice,
-                'received_qty' => $newRcv,
-            ]);
+            $qtyDelta = $newQty - $oldQty;
 
-            // Stock delta only from change in received_qty
-            $deltaRcv = $newRcv - $oldRcv;
-            if ($deltaRcv !== 0) {
-                $this->incrementStock($item->product_id, $branchId, +$deltaRcv);
-                StockMovement::create([
-                    'product_id' => $item->product_id,
-                    'branch_id'  => $branchId,
-                    'type'       => 'adjustment',
-                    'quantity'   => $deltaRcv, // +inbound, -outbound
-                    'reference'  => $purchase->invoice_no,
-                ]);
+            // --- 1) Handle quantity changes (these are the ONLY times avg_cost may change) ---
+            if ($qtyDelta > 0) {
+                // Receive ONLY the delta qty at new price (updates stock qty + avg_cost)
+                app(\App\Services\InventoryValuationWriteService::class)->receivePurchase(
+                    productId: $item->product_id,
+                    branchId: $branchId,
+                    receiveQty: $qtyDelta,
+                    unitPrice: $newPrice,
+                    ref: $purchase->invoice_no
+                );
+
+                // JE: DR Inventory, CR AP for the delta line value
+                $lineValue = round($qtyDelta * $newPrice, 2);
+                app(\App\Services\AccountingService::class)->post(
+                    branchId: $purchase->branch_id,
+                    memo: "Purchase #{$purchase->invoice_no} - qty increase",
+                    reference: $purchase,
+                    lines: [
+                        ['account_code' => '1400', 'debit' => $lineValue, 'credit' => 0],
+                        ['account_code' => '2000', 'debit' => 0, 'credit' => $lineValue],
+                    ],
+                    entryDate: now()->toDateString(),
+                    userId: auth()->id()
+                );
+            } elseif ($qtyDelta < 0) {
+                // Return ONLY the delta qty at CURRENT avg (no revaluation)
+                $avg = app(\App\Services\InventoryValuationWriteService::class)->returnToVendor(
+                    productId: $item->product_id,
+                    branchId: $branchId,
+                    returnQty: -$qtyDelta,
+                    ref: $purchase->invoice_no
+                );
+
+                // AP down at line price; Inventory down at avg; difference -> PPV
+                $lineValue   = abs($qtyDelta) * $oldPrice;
+                $inventoryCr = abs($qtyDelta) * $avg;
+                $ppvDelta    = round($lineValue - $inventoryCr, 2);
+
+                $lines = [
+                    ['account_code' => '2000', 'debit' => $lineValue, 'credit' => 0],
+                    ['account_code' => '1400', 'debit' => 0, 'credit' => $inventoryCr],
+                ];
+                if ($ppvDelta != 0.0) {
+                    $lines[] = [
+                        'account_code' => '5205',
+                        'debit'  => $ppvDelta > 0 ?  $ppvDelta : 0,
+                        'credit' => $ppvDelta < 0 ? -$ppvDelta : 0,
+                    ];
+                }
+
+                app(\App\Services\AccountingService::class)->post(
+                    branchId: $purchase->branch_id,
+                    memo: "Purchase #{$purchase->invoice_no} - qty decrease",
+                    reference: $purchase,
+                    lines: $lines,
+                    entryDate: now()->toDateString(),
+                    userId: auth()->id()
+                );
             }
 
-            $this->recalculatePurchase($purchase->fresh());
+            // --- 2) Update the line itself (no stock touch here) ---
+            $item->update([
+                'quantity' => $newQty,
+                'price'    => $newPrice,
+                'total'    => $newQty * $newPrice,
+            ]);
+
+            // --- 3) Price-only delta on EXISTING qty (no avg change, no stock move) ---
+            if ($qtyDelta === 0 && $newPrice !== $oldPrice) {
+                // Move the difference to PPV vs AP (Inventory untouched)
+                $amt = round(($newPrice - $oldPrice) * $oldQty, 2);
+                if ($amt != 0.0) {
+                    app(\App\Services\AccountingService::class)->post(
+                        branchId: $purchase->branch_id,
+                        memo: "Purchase #{$purchase->invoice_no} - price adjustment",
+                        reference: $purchase,
+                        lines: [
+                            ['account_code' => '5205', 'debit' => $amt > 0 ? $amt : 0, 'credit' => $amt < 0 ? abs($amt) : 0],
+                            ['account_code' => '2000', 'debit' => $amt < 0 ? abs($amt) : 0, 'credit' => $amt > 0 ? $amt : 0],
+                        ],
+                        entryDate: now()->toDateString(),
+                        userId: auth()->id()
+                    );
+                }
+            }
+
+            // --- 4) Recompute header totals (for UI/reporting only) ---
+            $subtotal = $purchase->items()->sum(DB::raw('quantity * price'));
+            $total    = max(0, $subtotal - $purchase->discount + $purchase->tax);
+            $purchase->update([
+                'subtotal' => round($subtotal, 2),
+                'total'    => round($total, 2),
+            ]);
 
             return ApiResponse::success(['item' => $item->fresh()], 'Item updated');
         });
@@ -394,28 +532,78 @@ class PurchaseController extends Controller
         $branchId = (int) $purchase->branch_id;
 
         return DB::transaction(function () use ($purchase, $itemId, $branchId) {
-            $item = $purchase->items()->findOrFail($itemId);
+            $item = $purchase->items()->lockForUpdate()->findOrFail($itemId);
 
-            // Reverse any received qty
-            $received = (int)$item->received_qty;
-            if ($received > 0) {
-                $this->incrementStock($item->product_id, $branchId, -$received);
-                StockMovement::create([
-                    'product_id' => $item->product_id,
-                    'branch_id'  => $branchId,
-                    'type'       => 'adjustment',
-                    'quantity'   => -$received,
-                    'reference'  => $purchase->invoice_no,
-                ]);
+            $qty = (int) $item->quantity;
+            if ($qty > 0) {
+                // Return all qty to vendor at avg (no revaluation)
+                $avg = app(\App\Services\InventoryValuationWriteService::class)->returnToVendor(
+                    productId: $item->product_id,
+                    branchId: $branchId,
+                    returnQty: $qty,
+                    ref: $purchase->invoice_no
+                );
+
+                // --- Currency rounding to 2dp everywhere ---
+                $lineValue   = round($qty * (float) $item->price, 2); // AP reduction at line price
+                $inventoryCr = round($qty * (float) $avg, 2);         // Inventory credit at avg (rounded)
+
+                // PPV to bridge line vs avg after rounding
+                $ppvDelta = round($lineValue - $inventoryCr, 2);      // DR if positive, CR if negative
+
+                // Build lines
+                $lines = [
+                    ['account_code' => '2000', 'debit' => $lineValue,            'credit' => 0.00], // reduce AP
+                    ['account_code' => '1400', 'debit' => 0.00,                  'credit' => $inventoryCr], // reduce Inventory
+                ];
+                if ($ppvDelta != 0.00) {
+                    $lines[] = [
+                        'account_code' => '5205',
+                        'debit'  => $ppvDelta > 0 ?  $ppvDelta : 0.00,
+                        'credit' => $ppvDelta < 0 ? -$ppvDelta : 0.00,
+                    ];
+                }
+
+                // Final tiny balancing (handles rare 0.01 drift after all rounding)
+                $sumD = 0.00;
+                $sumC = 0.00;
+                foreach ($lines as $l) {
+                    $sumD += $l['debit'];
+                    $sumC += $l['credit'];
+                }
+                $diff = round($sumD - $sumC, 2); // +ve means too much debit
+                if ($diff !== 0.00) {
+                    $lines[] = [
+                        'account_code' => '5205',
+                        'debit'  => $diff < 0 ? round(abs($diff), 2) : 0.00, // add debit if credits > debits
+                        'credit' => $diff > 0 ? round(abs($diff), 2) : 0.00, // add credit if debits > credits
+                    ];
+                }
+
+                app(\App\Services\AccountingService::class)->post(
+                    branchId: $purchase->branch_id,
+                    memo: "Purchase #{$purchase->invoice_no} - delete item (return)",
+                    reference: $purchase,
+                    lines: $lines,
+                    entryDate: now()->toDateString(),
+                    userId: auth()->id()
+                );
             }
 
             $item->delete();
 
-            $this->recalculatePurchase($purchase->fresh());
+            // Recompute header totals
+            $subtotal = $purchase->items()->sum(DB::raw('quantity * price'));
+            $total    = max(0, $subtotal - $purchase->discount + $purchase->tax);
+            $purchase->update([
+                'subtotal' => round($subtotal, 2),
+                'total'    => round($total, 2),
+            ]);
 
-            return ApiResponse::success($purchase->load('items.product', 'payments'), 'Item deleted');
+            return ApiResponse::success($purchase->load('items.product'), 'Item deleted');
         });
     }
+
 
     /* ===================== Cancel ===================== */
 

@@ -7,6 +7,7 @@ use App\Http\Response\ApiResponse;
 use App\Models\Product;
 use App\Models\ProductStock;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class ProductController extends Controller
 {
@@ -99,20 +100,58 @@ class ProductController extends Controller
             'is_active'      => 'boolean',
         ]);
 
-        $product = Product::create($data);
-
-        // initialize stock in all branches
-        if ($request->has('branch_stocks')) {
-            foreach ($request->branch_stocks as $stock) {
-                ProductStock::create([
-                    'product_id' => $product->id,
-                    'branch_id'  => $stock['branch_id'],
-                    'quantity'   => $stock['quantity'] ?? 0,
-                ]);
+        return DB::transaction(function () use ($data, $request) {
+            $product = Product::create($data);
+    
+            // initialize stock in all branches
+            if ($request->has('branch_stocks')) {
+                $unitCost = (float) ($data['cost_price'] ?? 0); // cost given while creating product
+                $asOf     = now()->toDateString();
+    
+                // aggregate value per-branch to post one JE per branch
+                $valueByBranch = [];
+    
+                foreach ($request->branch_stocks as $stock) {
+                    $branchId = (int) $stock['branch_id'];
+                    $qty      = (int) ($stock['quantity'] ?? 0);
+                    if ($qty <= 0) continue;
+    
+                    // 1) Update stocks with moving-average (opening)
+                    app(\App\Services\InventoryValuationWriteService::class)->receivePurchase(
+                        productId: $product->id,
+                        branchId: $branchId,
+                        receiveQty: $qty,
+                        unitPrice: $unitCost,
+                        ref: 'OPENING'
+                    );
+    
+                    // (Optional) ensure a stock row exists even if service handles it
+                    // ProductStock::firstOrCreate(['product_id'=>$product->id,'branch_id'=>$branchId]);
+    
+                    // 2) Accumulate branch value for GL posting
+                    $valueByBranch[$branchId] = ($valueByBranch[$branchId] ?? 0) + round($qty * $unitCost, 2);
+                }
+    
+                // 3) Post GL JE per branch: DR Inventory (1400) / CR Opening Equity (3100)
+                foreach ($valueByBranch as $branchId => $value) {
+                    if ($value <= 0) continue;
+    
+                    app(\App\Services\AccountingService::class)->post(
+                        branchId: $branchId,
+                        memo: "Opening stock for {$product->name} (#{$product->id})",
+                        reference: $product, // uses morph (reference_type/id)
+                        lines: [
+                            ['account_code' => '1400', 'debit' => $value, 'credit' => 0], // Inventory
+                            ['account_code' => '3100', 'debit' => 0,      'credit' => $value], // Opening/Retained Earnings
+                        ],
+                        entryDate: $asOf,
+                        userId: auth()->id()
+                    );
+                }
             }
-        }
-
-        return ApiResponse::success($product->load('category', 'brand', 'stocks'), 'Product created successfully', 201);
+    
+            return ApiResponse::success($product->load('category', 'brand', 'stocks'), 'Product created successfully', 201);
+        });
     }
 
     // Show product
@@ -121,7 +160,7 @@ class ProductController extends Controller
         $data['product'] = Product::with(['category', 'brand', 'stocks.branch'])->findOrFail($id);
         return ApiResponse::success($data, 'Product retrived successfully');
     }
-    public function findByBarcode($code,$vendor_id=null)
+    public function findByBarcode($code, $vendor_id = null)
     {
         if ($vendor_id) {
             $product = Product::where('barcode', $code)->where('vendor_id', $vendor_id)->first();
@@ -148,7 +187,7 @@ class ProductController extends Controller
             'brand_id'       => 'nullable|exists:brands,id',
             'price'          => 'numeric',
             'cost_price'     => 'nullable|numeric',
-            'wholesale_price'=> 'nullable|numeric',
+            'wholesale_price' => 'nullable|numeric',
             'tax_rate'       => 'nullable|numeric',
             'tax_inclusive'  => 'boolean',
             'discount'       => 'nullable|numeric',
