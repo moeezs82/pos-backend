@@ -27,7 +27,7 @@ class CustomerPaymentService
      *
      * @throws ValidationException
      */
-    public function create(array $data): Receipt
+    public function create(array $data, $isPostAccount = true): Receipt
     {
         $v = Validator::make($data, [
             'customer_id' => 'required|exists:customers,id',
@@ -62,19 +62,21 @@ class CustomerPaymentService
         // Map cash/bank account using cashSync (same pattern as vendor)
         $cashAccount = $this->cashSync->mapMethodToAccount($r->method, $r->branch_id);
 
-        // Use account code for AR (choose consistent code with your chart)
-        // I use '1200' as Accounts Receivable (adjust if your chart differs)
-        $this->accounting->post(
-            branchId: $r->branch_id,
-            memo: "Customer receipt #{$r->id}",
-            reference: $r,
-            lines: [
-                ['account_code' => $cashAccount->code, 'debit' => $r->amount, 'credit' => 0], // cash/bank debit
-                ['account_code' => '1200',               'debit' => 0,         'credit' => $r->amount], // AR credit
-            ],
-            entryDate: $r->received_at,
-            userId: $r->created_by
-        );
+        if ($isPostAccount) {
+            // Use account code for AR (choose consistent code with your chart)
+            // I use '1200' as Accounts Receivable (adjust if your chart differs)
+            $this->accounting->post(
+                branchId: $r->branch_id,
+                memo: "Customer receipt #{$r->id}",
+                reference: $r,
+                lines: [
+                    ['account_code' => $cashAccount->code, 'debit' => $r->amount, 'credit' => 0], // cash/bank debit
+                    ['account_code' => '1200',               'debit' => 0,         'credit' => $r->amount], // AR credit
+                ],
+                entryDate: $r->received_at,
+                userId: $r->created_by
+            );
+        }
 
         // Allocations: apply receipt to sales (if provided); otherwise caller can allocate later
         foreach (($data['allocations'] ?? []) as $al) {

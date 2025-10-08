@@ -34,7 +34,7 @@ class VendorPaymentService
      *
      * @throws ValidationException
      */
-    public function create(array $data): VendorPayment
+    public function create(array $data, $isPostAccount = true): VendorPayment
     {
         $v = Validator::make($data, [
             'vendor_id' => 'required|exists:vendors,id',
@@ -68,17 +68,19 @@ class VendorPaymentService
         // Post double entry: DR AP (2000), CR Cash/Bank (from cashSync)
         $cashAccount = $this->cashSync->mapMethodToAccount($vp->method, $vp->branch_id);
 
-        $this->accounting->post(
-            branchId: $vp->branch_id,
-            memo: "Vendor payment #{$vp->id}",
-            reference: $vp,
-            lines: [
-                ['account_code' => '2000',               'debit' => $vp->amount, 'credit' => 0], // reduce AP
-                ['account_code' => $cashAccount->code,   'debit' => 0,           'credit' => $vp->amount], // cash/bank credit
-            ],
-            entryDate: $vp->paid_at,
-            userId: $vp->created_by
-        );
+        if ($isPostAccount) {
+            $this->accounting->post(
+                branchId: $vp->branch_id,
+                memo: "Vendor payment #{$vp->id}",
+                reference: $vp,
+                lines: [
+                    ['account_code' => '2000',               'debit' => $vp->amount, 'credit' => 0], // reduce AP
+                    ['account_code' => $cashAccount->code,   'debit' => 0,           'credit' => $vp->amount], // cash/bank credit
+                ],
+                entryDate: $vp->paid_at,
+                userId: $vp->created_by
+            );
+        }
 
         // Save allocations (if provided). Caller may pass allocations or we can create allocations
         // for a single purchase (e.g. the purchase we just created) outside of this method.

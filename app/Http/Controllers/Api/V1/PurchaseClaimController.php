@@ -61,7 +61,7 @@ class PurchaseClaimController extends Controller
         return ApiResponse::success($claim);
     }
 
-    public function store(Request $request, AccountingService $accounting, CashSyncService $cashSync)
+    public function store(Request $request, AccountingService $accounting, CashSyncService $cashSync, \App\Services\VendorPaymentService $vps)
     {
         $data = $request->validate([
             'purchase_id' => ['required', 'integer', 'exists:purchases,id'],
@@ -84,7 +84,7 @@ class PurchaseClaimController extends Controller
             'receipt.received_at'  => ['nullable', 'date'],
         ]);
 
-        return DB::transaction(function () use ($data, $request, $accounting, $cashSync) {
+        return DB::transaction(function () use ($data, $request, $accounting, $cashSync, $vps) {
             // Lock the purchase header
             $purchase = \App\Models\Purchase::query()
                 ->where('id', $data['purchase_id'])
@@ -217,78 +217,19 @@ class PurchaseClaimController extends Controller
                     'approved_by' => optional($request->user())->id,
                     'approved_at' => now(),
                 ]);
-                // Compute totals
-                $stockAmount = 0.0;    // amount for items that affected stock
-                $nonStockAmount = 0.0; // amount for items that did not affect stock
+                // 1) Stock movements for stock-affecting items (RETURN/DECREMENT)
+                foreach ($claim->items as $item) {
+                    if (! $item->affects_stock) continue;
 
-                foreach ($prepared as $line) {
-                    if (!empty($line['affects_stock'])) {
-                        $stockAmount += (float)$line['total'];
-                    } else {
-                        $nonStockAmount += (float)$line['total'];
-                    }
+                    $this->ensureStockRowAndDecrement(
+                        productId: $item->product_id,
+                        branchId: $claim->branch_id,
+                        qtyToDecrement: (int) $item->quantity,
+                        reference: $claim->claim_no
+                    );
                 }
-
-                // rounding
-                $stockAmount = round($stockAmount, 2);
-                $nonStockAmount = round($nonStockAmount, 2);
-                $claimTotal = round($subtotal, 2); // already used above to set claim->total
-
-                // Load account codes from config (update config/accounts.php to match your COA)
-                // Defaults provided so code runs out-of-the-box — replace codes with your actual accounts.
-                $apAccount          = config('accounts.ap_account', '2000');            // Accounts Payable
-                $inventoryAccount   = config('accounts.inventory_account', '1400');     // Inventory / stock asset
-                $returnsAccount     = config('accounts.purchase_returns_account', '4000'); // Purchase returns / contra-expense
-
-                // Build GL lines:
-                // Debit AP (reduce liability) for full claim total.
-                // Credit Inventory for stock-related amount (reduce asset).
-                // Credit Purchase Returns for non-stock amount.
-                $glLines = [];
-
-                // Debit AP for full claim amount
-                $glLines[] = [
-                    'account_code' => $apAccount,
-                    'debit' => $claimTotal,
-                    'credit' => 0,
-                ];
-
-                // Credits (split)
-                if ($stockAmount > 0) {
-                    $glLines[] = [
-                        'account_code' => $inventoryAccount,
-                        'debit' => 0,
-                        'credit' => $stockAmount,
-                    ];
-                }
-                if ($nonStockAmount > 0) {
-                    $glLines[] = [
-                        'account_code' => $returnsAccount,
-                        'debit' => 0,
-                        'credit' => $nonStockAmount,
-                    ];
-                }
-
-                // Sanity: ensure debit == credit (allowing tiny rounding diffs)
-                $debitSum = array_sum(array_map(fn($l) => (float)$l['debit'], $glLines));
-                $creditSum = array_sum(array_map(fn($l) => (float)$l['credit'], $glLines));
-                $diff = round($debitSum - $creditSum, 2);
-
-                if (abs($diff) > 0.05) {
-                    // Something is wrong — throw to rollback and surface error
-                    throw new \Exception("Claim accounting mismatch: debits ($debitSum) != credits ($creditSum)");
-                }
-
-                // Post to GL using your AccountingService
-                // memo/reference can be customized to your preference
-                $accounting->post(
-                    branchId: $purchase->branch_id,
-                    memo: "Purchase Claim {$claim->claim_no} (approved) for Purchase {$purchase->invoice_no}",
-                    reference: $claim,
-                    lines: $glLines,
-                    entryDate: now()->toDateString(),
-                    userId: optional($request->user())->id
-                );
+                // 3) Post GL (AP debit; Inventory / PurchaseReturns credits)
+                $this->postClaimAccounting($claim, $accounting, $request, $vps);
 
                 // -------------------- Handle receipt (vendor refund) if provided --------------------
                 $receiveAmt = (float) ($request->input('receipt.amount') ?? 0);
@@ -541,7 +482,8 @@ class PurchaseClaimController extends Controller
                 'branch_id' => $claim->branch_id,
                 'method' => 'cash',
                 'amount' => $stockAmount,
-            ]);
+                'reference' => "Claim receipt approve for Purchase Invoice # " . $claim->purchase?->invoice_no
+            ], false);
         }
     }
 
@@ -637,8 +579,8 @@ class PurchaseClaimController extends Controller
         \App\Services\AccountingService $accounting,
         \App\Services\VendorPaymentService $vps
     ) {
-        return DB::transaction(function () use ($id, $request, $accounting,$vps) {
-            $claim = PurchaseClaim::with(['items', 'purchase:id,vendor_id,branch_id'])
+        return DB::transaction(function () use ($id, $request, $accounting, $vps) {
+            $claim = PurchaseClaim::with(['items', 'purchase:id,vendor_id,branch_id,invoice_no'])
                 ->lockForUpdate()
                 ->findOrFail($id);
 
@@ -666,7 +608,7 @@ class PurchaseClaimController extends Controller
             ]);
 
             // 3) Post GL (AP debit; Inventory / PurchaseReturns credits)
-            $this->postClaimAccounting($claim, $accounting, $request,$vps);
+            $this->postClaimAccounting($claim, $accounting, $request, $vps);
 
             // 4) Done — no receipt creation/posting
             return ApiResponse::success(
