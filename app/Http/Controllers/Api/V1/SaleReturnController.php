@@ -10,7 +10,9 @@ use App\Models\SaleItem;
 use App\Models\SaleReturn;
 use App\Models\SaleReturnRefund;
 use App\Models\StockMovement;
+use App\Services\AccountingService;
 use App\Services\CashSyncService;
+use App\Services\CustomerPaymentService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -21,7 +23,7 @@ class SaleReturnController extends Controller
     public function index(Request $request)
     {
         $query = SaleReturn::with(['sale:id,invoice_no,customer_id,branch_id', 'sale.customer:id,first_name,last_name', 'sale.branch:id,name'])
-                ->withSum('refunds as refund_total', 'amount');
+            ->withSum('refunds as refund_total', 'amount');
 
         if ($request->branch_id) {
             $query->where('branch_id', $request->branch_id);
@@ -46,7 +48,7 @@ class SaleReturnController extends Controller
             $query->where(function ($q) use ($search) {
                 $q->where('return_no', 'like', "%$search%")
                     ->orWhereHas('sale', fn($p) => $p->where('invoice_no', 'like', "%$search%"));
-                    // ->orWhereHas('sale.customer', fn($v) => $v->where('first_name', 'like', "%$search%"));
+                // ->orWhereHas('sale.customer', fn($v) => $v->where('first_name', 'like', "%$search%"));
             });
         }
 
@@ -66,101 +68,359 @@ class SaleReturnController extends Controller
         return ApiResponse::success($return);
     }
 
+    // public function store(Request $request)
+    // {
+    //     $data = $request->validate([
+    //         'sale_id' => ['required', 'integer', 'exists:sales,id'],
+    //         'items'   => ['required', 'array', 'min:1'],
+    //         'items.*.sale_item_id' => ['required', 'integer'],
+    //         'items.*.quantity'     => ['required', 'integer', 'min:1'],
+    //         'reason' => ['nullable', 'string'],
+    //         // New: approve + refund on create
+    //         'approve_now'          => ['nullable', 'boolean'],
+    //         'refund.amount'        => ['nullable', 'numeric', 'min:0.01'],
+    //         'refund.method'        => ['nullable', 'string'],
+    //         'refund.reference'     => ['nullable', 'string'],
+    //         'refund.refunded_at'   => ['nullable', 'date'],
+    //     ]);
+
+    //     $sale = Sale::where('id', $data['sale_id'])->lockForUpdate()->firstOrFail();
+    //     return DB::transaction(function () use ($data, $sale, $request) {
+    //         // Lock sale header
+
+    //         // Only fetch the items we need (ONE query)
+    //         $requestedIds = collect($data['items'])->pluck('sale_item_id')->unique()->values();
+    //         $saleItems = SaleItem::query()
+    //             ->where('sale_id', $sale->id)
+    //             ->whereIn('id', $requestedIds)
+    //             ->select('id', 'sale_id', 'product_id', 'quantity', 'price')
+    //             ->get()->keyBy('id');
+
+    //         // Ensure all requested items belong to this sale
+    //         if ($saleItems->count() !== $requestedIds->count()) {
+    //             return ApiResponse::error('One or more sale_item_id do not belong to this sale.', 422);
+    //         }
+
+    //         // Sum already returned quantities in ONE query
+    //         $alreadyReturned = DB::table('sale_return_items as sri')
+    //             ->join('sale_returns as sr', 'sr.id', '=', 'sri.sale_return_id')
+    //             ->where('sr.sale_id', $sale->id)
+    //             ->whereIn('sri.sale_item_id', $requestedIds)
+    //             ->groupBy('sri.sale_item_id')
+    //             ->pluck(DB::raw('SUM(sri.quantity)'), 'sri.sale_item_id'); // map: id => returned_qty
+
+    //         // Single validation + preparation pass (no recomputation later)
+    //         $violations = [];
+    //         $prepared = [];        // per line: ['sale_item_id','product_id','qty','price','total']
+    //         $byProductIncrements = []; // product_id => total qty to add back
+
+    //         foreach ($data['items'] as $r) {
+    //             $si = $saleItems[$r['sale_item_id']];
+    //             $sold = (int)$si->quantity;
+    //             $prev = (int)($alreadyReturned[$si->id] ?? 0);
+    //             $remaining = max($sold - $prev, 0);
+    //             $req = (int)$r['quantity'];
+
+    //             if ($req > $remaining) {
+    //                 $violations[] = "Item #{$si->id}: requested {$req} exceeds remaining {$remaining} (sold {$sold}, returned {$prev}).";
+    //                 continue;
+    //             }
+
+    //             if ($req <= 0) continue;
+
+    //             $lineTotal = $req * (float)$si->price;
+    //             $prepared[] = [
+    //                 'sale_item_id' => $si->id,
+    //                 'product_id'   => $si->product_id,
+    //                 'quantity'     => $req,
+    //                 'price'        => $si->price,
+    //                 'total'        => $lineTotal,
+    //             ];
+    //             $byProductIncrements[$si->product_id] = ($byProductIncrements[$si->product_id] ?? 0) + $req;
+    //         }
+
+    //         if (!empty($violations)) {
+    //             return ApiResponse::error("Return validation failed.", 422, $violations);
+    //         }
+
+    //         if (empty($prepared)) {
+    //             return ApiResponse::error('No valid return lines.', 422);
+    //         }
+
+    //         // Create return header
+    //         $subtotal = array_sum(array_column($prepared, 'total'));
+    //         $return = SaleReturn::create([
+    //             'sale_id'     => $sale->id,
+    //             'customer_id' => $sale->customer_id,
+    //             'vendor_id'   => $sale->vendor_id,
+    //             'branch_id'   => $sale->branch_id,
+    //             'return_no'   => 'RET-' . now()->format('YmdHis'),
+    //             'subtotal'    => $subtotal,
+    //             'tax'         => 0,
+    //             'total'       => $subtotal,
+    //             'reason'      => $data['reason'] ?? null,
+    //         ]);
+
+    //         // Bulk insert items (ONE query)
+    //         $rows = array_map(function ($line) use ($return) {
+    //             return [
+    //                 'sale_return_id' => $return->id,
+    //                 'sale_item_id'   => $line['sale_item_id'],
+    //                 'product_id'     => $line['product_id'],
+    //                 'quantity'       => $line['quantity'],
+    //                 'price'          => $line['price'],
+    //                 'total'          => $line['total'],
+    //                 'created_at'     => now(),
+    //                 'updated_at'     => now(),
+    //             ];
+    //         }, $prepared);
+    //         DB::table('sale_return_items')->insert($rows);
+
+    //         // Stock restore in ONE SQL using CASE..WHEN (no per-row increment)
+    //         // (Falls back to per-row if your DB driver dislikes big CASE statements.)
+    //         $productIds = array_keys($byProductIncrements);
+    //         if (!empty($productIds)) {
+    //             $case = collect($byProductIncrements)->map(function ($qty, $pid) {
+    //                 return "WHEN {$pid} THEN {$qty}";
+    //             })->implode(' ');
+    //             DB::update("
+    //             UPDATE product_stocks
+    //             SET quantity = quantity + CASE product_id {$case} END
+    //             WHERE branch_id = ? AND product_id IN (" . implode(',', $productIds) . ")
+    //         ", [$sale->branch_id]);
+
+    //             // Movements: insert in bulk (ONE query)
+    //             $movementRows = [];
+    //             foreach ($byProductIncrements as $pid => $qty) {
+    //                 $movementRows[] = [
+    //                     'product_id' => $pid,
+    //                     'branch_id'  => $sale->branch_id,
+    //                     'type'       => 'return',
+    //                     'quantity'   => $qty,
+    //                     'reference'  => $return->return_no,
+    //                     'created_at' => now(),
+    //                     'updated_at' => now(),
+    //                 ];
+    //             }
+    //             DB::table('stock_movements')->insert($movementRows);
+    //         }
+    //         // --- Approve now & immediate refund (optional) ---
+    //         $approveNow = (bool) ($data['approve_now'] ?? false);
+    //         $refundedTotal = 0.0;
+    //         $refundableLeft = (float) $return->total;
+
+    //         if ($approveNow) {
+    //             $return->update(['status' => 'approved']);
+
+    //             // If refund provided, validate and post to cashbook
+    //             $refundAmount = (float) ($request->input('refund.amount') ?? 0);
+    //             if ($refundAmount > 0) {
+    //                 if ($refundAmount > $refundableLeft) {
+    //                     return \App\Http\Response\ApiResponse::error(
+    //                         "Refund {$refundAmount} exceeds refundable left {$refundableLeft}",
+    //                         422
+    //                     );
+    //                 }
+
+    //                 SaleReturnRefund::create([
+    //                     'sale_return_id' => $return->id,
+    //                     'amount'         => (float)$request->input('refund.amount'),
+    //                     'method'         => $request->input('refund.method', 'cash'),
+    //                     'reference'      => $request->input('refund.reference'),
+    //                     'refunded_at'    => $request->input('refund.refunded_at'),
+    //                     'created_by'     => optional($request->user())->id,
+    //                 ]);
+    //             }
+    //         }
+
+    //         return ApiResponse::success($return->load('items'));
+    //     });
+    // }
+    // // Approve Return / Refund
+    // public function approve(Request $request, $id)
+    // {
+    //     // Optional refund payload validation
+    //     $request->validate([
+    //         'refund.amount'      => 'nullable|numeric|min:0.01',
+    //         'refund.method'      => 'nullable|string',
+    //         'refund.reference'   => 'nullable|string',
+    //         'refund.refunded_at' => 'nullable|date',
+    //     ]);
+
+    //     return DB::transaction(function () use ($request, $id) {
+    //         /** @var \App\Models\SaleReturn $return */
+    //         $return = SaleReturn::query()
+    //             ->where('id', $id)
+    //             ->lockForUpdate()
+    //             ->firstOrFail();
+
+    //         // 1) Approve (idempotent)
+    //         if ($return->status !== 'approved') {
+    //             $return->update(['status' => 'approved']);
+    //         }
+
+    //         $refundedNow = $this->storeRefund($return, $request);
+    //         $amount = (float) data_get($request->input('refund'), 'amount', 0);
+    //         return \App\Http\Response\ApiResponse::success([
+    //             'return'         => $return->fresh(),
+    //             'refunded_total' => round((float)$refundedNow, 2),
+    //             'refundable_left' => round(max(0, (float)$return->total - (float)$refundedNow), 2),
+    //         ], 'Sale return approved' . ($amount > 0 ? ' and refund posted' : ''));
+    //     });
+    // }
+
+    // public function refund(Request $request, $id)
+    // {
+    //     $request->validate([
+    //         'amount'      => 'required|numeric|min:0.01',
+    //         'method'      => 'nullable|string',
+    //         'reference'   => 'nullable|string',
+    //         'refunded_at' => 'nullable|date',
+    //     ]);
+
+    //     return DB::transaction(function () use ($request, $id) {
+    //         /** @var \App\Models\SaleReturn $return */
+    //         $return = SaleReturn::query()
+    //             ->where('id', $id)
+    //             ->lockForUpdate()
+    //             ->firstOrFail();
+
+    //         $refundedNow = $this->storeRefund($return, $request);
+
+    //         return \App\Http\Response\ApiResponse::success([
+    //             'return'          => $return->fresh(),
+    //             'refunded_total'  => round((float)$refundedNow, 2),
+    //             'refundable_left' => round(max(0, (float)$return->total - (float)$refundedNow), 2),
+    //         ], 'Refund posted');
+    //     });
+    // }
+
+    // protected function storeRefund(SaleReturn $return, Request $request)
+    // {
+    //     if ($return->status !== 'approved') {
+    //         throw ValidationException::withMessages([
+    //             'status' => 'Return must be approved before refunding.',
+    //         ]);
+    //     }
+
+    //     $amount = (float) $request->input('amount');
+
+    //     // Already refunded total (approved cash rows)
+    //     $refunded = SaleReturnRefund::query()
+    //         ->where('sale_return_id', $return->id)
+    //         ->sum('amount');
+
+    //     $left = max(0, (float)$return->total - (float)$refunded);
+    //     if ($amount > $left) {
+    //         throw ValidationException::withMessages([
+    //             'amount' => "Amount {$amount} exceeds refundable left {$left}.",
+    //         ]);
+    //     }
+
+    //     SaleReturnRefund::create([
+    //         'sale_return_id' => $return->id,
+    //         'amount'         => (float)$request->input('refund.amount'),
+    //         'method'         => $request->input('refund.method', 'cash'),
+    //         'reference'      => $request->input('refund.reference'),
+    //         'refunded_at'    => $request->input('refund.refunded_at'),
+    //         'created_by'     => optional($request->user())->id,
+    //     ]);
+
+    //     return $refunded + $amount;
+    // }
+
     public function store(Request $request)
     {
         $data = $request->validate([
-            'sale_id' => ['required', 'integer', 'exists:sales,id'],
-            'items'   => ['required', 'array', 'min:1'],
-            'items.*.sale_item_id' => ['required', 'integer'],
-            'items.*.quantity'     => ['required', 'integer', 'min:1'],
-            'reason' => ['nullable', 'string'],
-            // New: approve + refund on create
-            'approve_now'          => ['nullable', 'boolean'],
-            'refund.amount'        => ['nullable', 'numeric', 'min:0.01'],
-            'refund.method'        => ['nullable', 'string'],
-            'refund.reference'     => ['nullable', 'string'],
-            'refund.refunded_at'   => ['nullable', 'date'],
+            'sale_id'                  => ['required', 'integer', 'exists:sales,id'],
+            'items'                    => ['required', 'array', 'min:1'],
+            'items.*.sale_item_id'     => ['required', 'integer'],
+            'items.*.quantity'         => ['required', 'integer', 'min:1'],
+            'reason'                   => ['nullable', 'string'],
+
+            'approve_now'              => ['nullable', 'boolean'],
+            'refund.amount'            => ['nullable', 'numeric', 'min:0.01'],
+            'refund.method'            => ['nullable', 'string'],
+            'refund.reference'         => ['nullable', 'string'],
+            'refund.refunded_at'       => ['nullable', 'date'],
         ]);
 
         $sale = Sale::where('id', $data['sale_id'])->lockForUpdate()->firstOrFail();
-        return DB::transaction(function () use ($data, $sale, $request) {
-            // Lock sale header
 
-            // Only fetch the items we need (ONE query)
+        return DB::transaction(function () use ($data, $sale, $request) {
+            // fetch requested items once
             $requestedIds = collect($data['items'])->pluck('sale_item_id')->unique()->values();
             $saleItems = SaleItem::query()
                 ->where('sale_id', $sale->id)
                 ->whereIn('id', $requestedIds)
-                ->select('id', 'sale_id', 'product_id', 'quantity', 'price')
+                ->select('id', 'sale_id', 'product_id', 'quantity', 'price') // unit_cost not needed yet
                 ->get()->keyBy('id');
 
-            // Ensure all requested items belong to this sale
             if ($saleItems->count() !== $requestedIds->count()) {
                 return ApiResponse::error('One or more sale_item_id do not belong to this sale.', 422);
             }
 
-            // Sum already returned quantities in ONE query
+            // how many already returned per item
             $alreadyReturned = DB::table('sale_return_items as sri')
                 ->join('sale_returns as sr', 'sr.id', '=', 'sri.sale_return_id')
                 ->where('sr.sale_id', $sale->id)
                 ->whereIn('sri.sale_item_id', $requestedIds)
                 ->groupBy('sri.sale_item_id')
-                ->pluck(DB::raw('SUM(sri.quantity)'), 'sri.sale_item_id'); // map: id => returned_qty
+                ->pluck(DB::raw('SUM(sri.quantity)'), 'sri.sale_item_id');
 
-            // Single validation + preparation pass (no recomputation later)
             $violations = [];
-            $prepared = [];        // per line: ['sale_item_id','product_id','qty','price','total']
-            $byProductIncrements = []; // product_id => total qty to add back
+            $prepared   = [];
+            $subtotal   = 0.0;
 
             foreach ($data['items'] as $r) {
-                $si = $saleItems[$r['sale_item_id']];
-                $sold = (int)$si->quantity;
-                $prev = (int)($alreadyReturned[$si->id] ?? 0);
+                $si        = $saleItems[$r['sale_item_id']];
+                $sold      = (int)$si->quantity;
+                $prev      = (int)($alreadyReturned[$si->id] ?? 0);
                 $remaining = max($sold - $prev, 0);
-                $req = (int)$r['quantity'];
+                $req       = (int)$r['quantity'];
 
                 if ($req > $remaining) {
                     $violations[] = "Item #{$si->id}: requested {$req} exceeds remaining {$remaining} (sold {$sold}, returned {$prev}).";
                     continue;
                 }
-
                 if ($req <= 0) continue;
 
-                $lineTotal = $req * (float)$si->price;
+                $lineTotal = round($req * (float)$si->price, 2);
+                $subtotal += $lineTotal;
+
                 $prepared[] = [
                     'sale_item_id' => $si->id,
                     'product_id'   => $si->product_id,
                     'quantity'     => $req,
-                    'price'        => $si->price,
+                    'price'        => (float)$si->price,
                     'total'        => $lineTotal,
                 ];
-                $byProductIncrements[$si->product_id] = ($byProductIncrements[$si->product_id] ?? 0) + $req;
             }
 
             if (!empty($violations)) {
                 return ApiResponse::error("Return validation failed.", 422, $violations);
             }
-
             if (empty($prepared)) {
                 return ApiResponse::error('No valid return lines.', 422);
             }
 
-            // Create return header
-            $subtotal = array_sum(array_column($prepared, 'total'));
+            // header (pending)
             $return = SaleReturn::create([
                 'sale_id'     => $sale->id,
                 'customer_id' => $sale->customer_id,
                 'vendor_id'   => $sale->vendor_id,
                 'branch_id'   => $sale->branch_id,
                 'return_no'   => 'RET-' . now()->format('YmdHis'),
-                'subtotal'    => $subtotal,
-                'tax'         => 0,
-                'total'       => $subtotal,
+                'subtotal'    => round($subtotal, 2),
+                'tax'         => 0.00, // add VAT if you need to reverse it
+                'total'       => round($subtotal, 2),
                 'reason'      => $data['reason'] ?? null,
+                'status'      => 'pending',
             ]);
 
-            // Bulk insert items (ONE query)
+            // items
             $rows = array_map(function ($line) use ($return) {
+                $ts = now();
                 return [
                     'sale_return_id' => $return->id,
                     'sale_item_id'   => $line['sale_item_id'],
@@ -168,76 +428,36 @@ class SaleReturnController extends Controller
                     'quantity'       => $line['quantity'],
                     'price'          => $line['price'],
                     'total'          => $line['total'],
-                    'created_at'     => now(),
-                    'updated_at'     => now(),
+                    'created_at'     => $ts,
+                    'updated_at'     => $ts,
                 ];
             }, $prepared);
             DB::table('sale_return_items')->insert($rows);
 
-            // Stock restore in ONE SQL using CASE..WHEN (no per-row increment)
-            // (Falls back to per-row if your DB driver dislikes big CASE statements.)
-            $productIds = array_keys($byProductIncrements);
-            if (!empty($productIds)) {
-                $case = collect($byProductIncrements)->map(function ($qty, $pid) {
-                    return "WHEN {$pid} THEN {$qty}";
-                })->implode(' ');
-                DB::update("
-                UPDATE product_stocks
-                SET quantity = quantity + CASE product_id {$case} END
-                WHERE branch_id = ? AND product_id IN (" . implode(',', $productIds) . ")
-            ", [$sale->branch_id]);
-
-                // Movements: insert in bulk (ONE query)
-                $movementRows = [];
-                foreach ($byProductIncrements as $pid => $qty) {
-                    $movementRows[] = [
-                        'product_id' => $pid,
-                        'branch_id'  => $sale->branch_id,
-                        'type'       => 'return',
-                        'quantity'   => $qty,
-                        'reference'  => $return->return_no,
-                        'created_at' => now(),
-                        'updated_at' => now(),
-                    ];
-                }
-                DB::table('stock_movements')->insert($movementRows);
-            }
-            // --- Approve now & immediate refund (optional) ---
-            $approveNow = (bool) ($data['approve_now'] ?? false);
-            $refundedTotal = 0.0;
-            $refundableLeft = (float) $return->total;
-
-            if ($approveNow) {
-                $return->update(['status' => 'approved']);
-
-                // If refund provided, validate and post to cashbook
-                $refundAmount = (float) ($request->input('refund.amount') ?? 0);
-                if ($refundAmount > 0) {
-                    if ($refundAmount > $refundableLeft) {
-                        return \App\Http\Response\ApiResponse::error(
-                            "Refund {$refundAmount} exceeds refundable left {$refundableLeft}",
-                            422
-                        );
-                    }
-
-                    SaleReturnRefund::create([
-                        'sale_return_id' => $return->id,
-                        'amount'         => (float)$request->input('refund.amount'),
-                        'method'         => $request->input('refund.method', 'cash'),
-                        'reference'      => $request->input('refund.reference'),
-                        'refunded_at'    => $request->input('refund.refunded_at'),
-                        'created_by'     => optional($request->user())->id,
-                    ]);
-                }
+            // approve now? delegate to same approve to keep a single source of truth
+            if ((bool)($data['approve_now'] ?? false)) {
+                $fake = new Request([
+                    'refund' => [
+                        'amount'      => data_get($data, 'refund.amount'),
+                        'method'      => data_get($data, 'refund.method', 'cash'),
+                        'reference'   => data_get($data, 'refund.reference'),
+                        'refunded_at' => data_get($data, 'refund.refunded_at'),
+                    ],
+                ]);
+                // We only pass Request; Accounting is injected in controller method signature in your app.
+                return $this->approve($fake, $return->id, app(\App\Services\AccountingService::class), app(CustomerPaymentService::class));
             }
 
             return ApiResponse::success($return->load('items'));
         });
     }
-    // Approve Return / Refund
-    public function approve(Request $request, $id)
-    {
-        // Optional refund payload validation
+
+    public function approve(
+        Request $request,
+        int $id,
+        AccountingService $accounting,
+        CustomerPaymentService $cps
+    ) {
         $request->validate([
             'refund.amount'      => 'nullable|numeric|min:0.01',
             'refund.method'      => 'nullable|string',
@@ -245,85 +465,190 @@ class SaleReturnController extends Controller
             'refund.refunded_at' => 'nullable|date',
         ]);
 
-        return DB::transaction(function () use ($request, $id) {
+        return DB::transaction(function () use ($request, $id, $accounting, $cps) {
             /** @var \App\Models\SaleReturn $return */
             $return = SaleReturn::query()
-                ->where('id', $id)
+                ->with(['items', 'sale']) // sale_return_items
                 ->lockForUpdate()
-                ->firstOrFail();
+                ->findOrFail($id);
 
-            // 1) Approve (idempotent)
-            if ($return->status !== 'approved') {
-                $return->update(['status' => 'approved']);
+            if ($return->status === 'approved') {
+                $refunded = SaleReturnRefund::where('sale_return_id', $return->id)->sum('amount');
+                return ApiResponse::success([
+                    'return'           => $return->fresh(['items']),
+                    'refunded_total'   => round((float)$refunded, 2),
+                    'refundable_left'  => round(max(0, (float)$return->total - (float)$refunded), 2),
+                    'message'          => 'Already approved.',
+                ]);
             }
 
-            $refundedNow = $this->storeRefund($return, $request);
-            $amount = (float) data_get($request->input('refund'), 'amount', 0);
-            return \App\Http\Response\ApiResponse::success([
-                'return'         => $return->fresh(),
-                'refunded_total' => round((float)$refundedNow, 2),
-                'refundable_left' => round(max(0, (float)$return->total - (float)$refundedNow), 2),
-            ], 'Sale return approved' . ($amount > 0 ? ' and refund posted' : ''));
-        });
-    }
+            // Group quantities by product for stock-in
+            $byProductQty = collect($return->items)
+                ->groupBy('product_id')
+                ->map(fn($lines) => (int) $lines->sum('quantity'));
 
-    public function refund(Request $request, $id)
-    {
-        $request->validate([
-            'amount'      => 'required|numeric|min:0.01',
-            'method'      => 'nullable|string',
-            'reference'   => 'nullable|string',
-            'refunded_at' => 'nullable|date',
-        ]);
+            $productIds = $byProductQty->keys()->all();
 
-        return DB::transaction(function () use ($request, $id) {
-            /** @var \App\Models\SaleReturn $return */
-            $return = SaleReturn::query()
-                ->where('id', $id)
-                ->lockForUpdate()
-                ->firstOrFail();
+            // Pull original unit_cost from SALE ITEMS to reverse COGS correctly
+            $saleItemIds = $return->items->pluck('sale_item_id')->unique()->values();
+            $saleCosts = DB::table('sale_items')
+                ->whereIn('id', $saleItemIds)
+                ->select('id', 'product_id', 'unit_cost')
+                ->get();
 
-            $refundedNow = $this->storeRefund($return, $request);
+            // Build cost per product from original sale unit_cost * qty being returned
+            $inventoryValue = 0.0;
+            $byProductCost  = []; // product_id => cost sum
+            foreach ($return->items as $ri) {
+                $si = $saleCosts->firstWhere('id', $ri->sale_item_id);
+                $uc = (float)($si->unit_cost ?? 0.0);
+                $lineCost = round($uc * (int)$ri->quantity, 4);
+                $inventoryValue += $lineCost;
+                $byProductCost[$ri->product_id] = ($byProductCost[$ri->product_id] ?? 0.0) + $lineCost;
+            }
+            $inventoryValue = round($inventoryValue, 2);
 
-            return \App\Http\Response\ApiResponse::success([
-                'return'          => $return->fresh(),
-                'refunded_total'  => round((float)$refundedNow, 2),
-                'refundable_left' => round(max(0, (float)$return->total - (float)$refundedNow), 2),
-            ], 'Refund posted');
-        });
-    }
+            // 1) STOCK-IN (bulk CASE … WHEN)
+            if (!empty($productIds)) {
+                $case = collect($byProductQty)->map(fn($qty, $pid) => "WHEN {$pid} THEN {$qty}")->implode(' ');
+                DB::update("
+                UPDATE product_stocks
+                SET quantity = quantity + CASE product_id {$case} END
+                WHERE branch_id = ? AND product_id IN (" . implode(',', $productIds) . ")
+            ", [$return->branch_id]);
 
-    protected function storeRefund(SaleReturn $return, Request $request)
-    {
-        if ($return->status !== 'approved') {
-            throw ValidationException::withMessages([
-                'status' => 'Return must be approved before refunding.',
+                // Optional: maintain weighted avg_cost using original unit_cost (loop per product to keep code simple)
+                // Fetch current stocks for these products
+                $stocks = DB::table('product_stocks')
+                    ->where('branch_id', $return->branch_id)
+                    ->whereIn('product_id', $productIds)
+                    ->select('product_id', 'quantity', 'avg_cost')
+                    ->get()->keyBy('product_id');
+
+                foreach ($productIds as $pid) {
+                    $incQty  = (int)($byProductQty[$pid] ?? 0);
+                    $addCost = (float)($byProductCost[$pid] ?? 0.0);
+                    if ($incQty <= 0) continue;
+
+                    $row     = $stocks[$pid] ?? null;
+                    $newQty  = (int)($row->quantity ?? 0);
+                    // Because we updated quantity above already, newQty is post-increase.
+                    $prevQty = max($newQty - $incQty, 0);
+                    $prevCost = (float)($row->avg_cost ?? 0.0);
+
+                    $newAvg = $prevQty + $incQty > 0
+                        ? round((($prevQty * $prevCost) + $addCost) / ($prevQty + $incQty), 4)
+                        : $prevCost;
+
+                    DB::table('product_stocks')
+                        ->where('branch_id', $return->branch_id)
+                        ->where('product_id', $pid)
+                        ->update(['avg_cost' => $newAvg]);
+                }
+
+                // Movements (bulk insert)
+                $now = now();
+                $movementRows = [];
+                foreach ($byProductQty as $pid => $qty) {
+                    $movementRows[] = [
+                        'product_id' => $pid,
+                        'branch_id'  => $return->branch_id,
+                        'type'       => 'return',
+                        'quantity'   => (int)$qty,
+                        'reference'  => $return->return_no,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ];
+                }
+                DB::table('stock_movements')->insert($movementRows);
+            }
+
+            // 2) GL postings for approval
+            $salesValue = round((float)$return->items->sum('total'), 2); // selling price basis
+
+            $salesReturnsAcc   = config('accounts.sales_returns_account', '4000');
+            $receiveableAcc = config('accounts.receiveable_account', '1200');
+            $inventoryAcc      = config('accounts.inventory_account', '1400');
+            $cogsAcc           = config('accounts.cogs_account', '5100');
+
+            $lines = [];
+
+            // Revenue reversal
+            if ($salesValue > 0) {
+                $lines[] = ['account_code' => $salesReturnsAcc,   'debit' => $salesValue,   'credit' => 0];
+                $lines[] = ['account_code' => $receiveableAcc, 'debit' => 0,             'credit' => $salesValue];
+            }
+
+            // Cost reversal (at original unit_cost)
+            if ($inventoryValue > 0) {
+                $lines[] = ['account_code' => $inventoryAcc, 'debit' => $inventoryValue, 'credit' => 0];
+                $lines[] = ['account_code' => $cogsAcc,      'debit' => 0,               'credit' => $inventoryValue];
+            }
+
+            $d = array_sum(array_column($lines, 'debit'));
+            $c = array_sum(array_column($lines, 'credit'));
+            if (round($d - $c, 2) !== 0.00) {
+                throw new \RuntimeException("Unbalanced JE for sale return {$return->id}: DR {$d} != CR {$c}");
+            }
+
+            $accounting->post(
+                branchId: $return->branch_id,
+                memo: "Sale Return {$return->return_no} approved (Sale #{$return->sale_id})",
+                reference: $return,
+                lines: $lines,
+                entryDate: now()->toDateString(),
+                userId: optional($request->user())->id
+            );
+
+            // mark approved
+            $return->update([
+                'status'      => 'approved',
+                'approved_by' => optional($request->user())->id,
+                'approved_at' => now(),
             ]);
-        }
+            $cps->create([
+                'customer_id' => $return->customer_id,
+                'branch_id' => $return->branch_id,
+                'method' => 'wallet',
+                'amount' => $return->total,
+                'reference' => "Sale return for invoice " . $return->sale?->invoice_no
+            ], false);
 
-        $amount = (float) $request->input('amount');
+            // 3) Optional immediate refund payout
+            // $refundAmount = (float) data_get($request->input('refund'), 'amount', 0);
+            // if ($refundAmount > 0) {
+            //     $alreadyRefunded = (float) SaleReturnRefund::where('sale_return_id', $return->id)->sum('amount');
+            //     $left = max(0, (float)$return->total - $alreadyRefunded);
+            //     if ($refundAmount > $left) {
+            //         throw ValidationException::withMessages([
+            //             'refund.amount' => "Refund {$refundAmount} exceeds refundable left {$left}.",
+            //         ]);
+            //     }
 
-        // Already refunded total (approved cash rows)
-        $refunded = SaleReturnRefund::query()
-            ->where('sale_return_id', $return->id)
-            ->sum('amount');
+            //     $method = data_get($request->input('refund'), 'method', 'cash');
+            //     $ref    = data_get($request->input('refund'), 'reference');
+            //     $when   = data_get($request->input('refund'), 'refunded_at')
+            //                 ? Carbon::parse(data_get($request->input('refund'), 'refunded_at'))
+            //                 : now();
 
-        $left = max(0, (float)$return->total - (float)$refunded);
-        if ($amount > $left) {
-            throw ValidationException::withMessages([
-                'amount' => "Amount {$amount} exceeds refundable left {$left}.",
-            ]);
-        }
+            //     SaleReturnRefund::create([
+            //         'sale_return_id' => $return->id,
+            //         'amount'         => $refundAmount,
+            //         'method'         => $method,
+            //         'reference'      => $ref,
+            //         'refunded_at'    => $when,
+            //         'created_by'     => optional($request->user())->id,
+            //     ]);
 
-        SaleReturnRefund::create([
-            'sale_return_id' => $return->id,
-            'amount'         => (float)$request->input('refund.amount'),
-            'method'         => $request->input('refund.method', 'cash'),
-            'reference'      => $request->input('refund.reference'),
-            'refunded_at'    => $request->input('refund.refunded_at'),
-            'created_by'     => optional($request->user())->id,
-        ]);
+            // }
 
-        return $refunded + $amount;
+            // $refundedNow = (float) SaleReturnRefund::where('sale_return_id', $return->id)->sum('amount');
+
+            return ApiResponse::success([
+                'return'           => $return->fresh(['items']),
+                'refunded_total'   => round($return->total, 2),
+                'refundable_left'  => round(max(0, 0), 2),
+            ], 'Sale return approved' . ($return->total > 0 ? ' and refund posted' : ''));
+        });
     }
 }

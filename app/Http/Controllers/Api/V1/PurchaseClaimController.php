@@ -230,42 +230,6 @@ class PurchaseClaimController extends Controller
                 }
                 // 3) Post GL (AP debit; Inventory / PurchaseReturns credits)
                 $this->postClaimAccounting($claim, $accounting, $request, $vps);
-
-                // -------------------- Handle receipt (vendor refund) if provided --------------------
-                $receiveAmt = (float) ($request->input('receipt.amount') ?? 0);
-                if ($receiveAmt > 0) {
-                    // Inserted earlier: creation of PurchaseClaimReceipt already done in your flow.
-                    // We will now post the cash/gl entry for the refund:
-                    //
-                    // Typical treatment: when vendor refunds cash to you, you DR Cash/Bank and CR Purchase Returns (or CR AP).
-                    // Since we already reduced AP above for the claim total, the safe option is to record the cash receipt
-                    // against the Purchase Returns / Claim account (i.e., DR Cash, CR Purchase Returns). That keeps the
-                    // claim lifecycle balanced on the 'returns' account.
-                    //
-                    // If you prefer to reduce AP directly instead (DR Cash, CR AP) then change the $receiptCreditAccount to $apAccount.
-                    $cashAccount = $cashSync->mapMethodToAccount($request->input('receipt.method', 'cash'), $purchase->branch_id);
-                    $receiptCreditAccount = $returnsAccount; // or set to $apAccount if you want to credit AP instead
-
-                    // // Post receipt entry
-                    // $accounting->post(
-                    //     branchId: $purchase->branch_id,
-                    //     memo: "Purchase Claim {$claim->claim_no} refund received ({$request->input('receipt.method', 'cash')})",
-                    //     reference: $claim,
-                    //     lines: [
-                    //         ['account_code' => $cashAccount->code, 'debit' => round($receiveAmt, 2), 'credit' => 0],
-                    //         ['account_code' => $receiptCreditAccount, 'debit' => 0, 'credit' => round($receiveAmt, 2)],
-                    //     ],
-                    //     entryDate: $request->input('receipt.received_at') ?? now()->toDateString(),
-                    //     userId: optional($request->user())->id
-                    // );
-                    // create receipt record(s) and get new total + this amount
-                    $receiptResult = $this->storeReceipt($claim, $request);
-                    $thisAmount = $receiptResult['this_amount'];
-                    $newTotal = $receiptResult['new_total'];
-
-                    // post accounting for this receipt
-                    $this->postReceiptAccounting($claim, $thisAmount, $receiptResult['receipt']->method ?? 'cash', $accounting, $cashSync, $request);
-                }
             }
 
             return \App\Http\Response\ApiResponse::success(

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
+use App\Models\ProductStock;
 use App\Models\Sale;
 use App\Models\StockMovement;
 use Illuminate\Http\Request;

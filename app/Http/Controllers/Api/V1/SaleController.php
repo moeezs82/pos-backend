@@ -110,14 +110,44 @@ class SaleController extends Controller
                 'status'      => 'pending',
             ]);
 
+            // gather product IDs once
+            $productIds = collect($data['items'])
+                ->pluck('product_id')
+                ->map(fn($id) => (int)$id)
+                ->unique()
+                ->values();
+
+            // Build a {product_id => avg_cost} map without N+1.
+            // If product_stocks has multiple rows per product, we take the latest (by id) per product for this branch.
+            $costByProduct = DB::table('product_stocks as ps')
+                ->join(
+                    DB::raw('(SELECT product_id, MAX(id) AS max_id FROM product_stocks WHERE branch_id = ' . (int)$sale->branch_id . ' GROUP BY product_id) latest'),
+                    'latest.max_id',
+                    '=',
+                    'ps.id'
+                )
+                ->where('ps.branch_id', $sale->branch_id)
+                ->whereIn('ps.product_id', $productIds)
+                ->pluck('ps.avg_cost', 'ps.product_id'); // -> { product_id: avg_cost }
+
             // create items (do not duplicate stock decrement here — handled by deductStockAndStampCosts)
             foreach ($data['items'] as $item) {
+                $productId = (int)$item['product_id'];
+                $qty       = (int)$item['quantity'];
+                $price     = (float)$item['price'];
+
+                $unitCost  = (float)($costByProduct[$productId] ?? 0.0);
+                $lineCost  = round($unitCost * $qty, 2);
+
                 $sale->items()->create([
-                    'product_id' => $item['product_id'],
-                    'quantity'   => (int)$item['quantity'],
-                    'price'      => (float)$item['price'],
-                    'total'      => round($item['quantity'] * $item['price'], 2),
-                    // unit_cost/line_cost will be set by deductStockAndStampCosts
+                    'product_id' => $productId,
+                    'quantity'   => $qty,
+                    'price'      => $price,
+                    'total'      => round($qty * $price, 2),
+
+                    // new
+                    'unit_cost'  => $unitCost,
+                    'line_cost'  => $lineCost,
                 ]);
             }
 
