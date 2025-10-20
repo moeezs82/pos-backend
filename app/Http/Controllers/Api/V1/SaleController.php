@@ -129,6 +129,7 @@ class SaleController extends Controller
                 ->where('ps.branch_id', $sale->branch_id)
                 ->whereIn('ps.product_id', $productIds)
                 ->pluck('ps.avg_cost', 'ps.product_id'); // -> { product_id: avg_cost }
+                $totalCogs = 0;
 
             // create items (do not duplicate stock decrement here — handled by deductStockAndStampCosts)
             foreach ($data['items'] as $item) {
@@ -138,6 +139,7 @@ class SaleController extends Controller
 
                 $unitCost  = (float)($costByProduct[$productId] ?? 0.0);
                 $lineCost  = round($unitCost * $qty, 2);
+                $totalCogs += $lineCost;
 
                 $sale->items()->create([
                     'product_id' => $productId,
@@ -150,6 +152,9 @@ class SaleController extends Controller
                     'line_cost'  => $lineCost,
                 ]);
             }
+            $sale->cogs = round($totalCogs, 2);
+            $sale->gross_profit = round($sale->total - $sale->cogs, 2);
+            $sale->save();
 
             // Deduct stock, stamp costs (sets unit_cost & line_cost on items) and update sale.cogs/gross_profit
             // This method uses InventoryValuationService->avgCost(...) and writes unit_cost/line_cost, product_stocks, stock movements

@@ -20,7 +20,9 @@ class Sale extends Model
         'discount',
         'tax',
         'total',
-        'status'
+        'status',
+        'cogs',
+        'gross_profit'
     ];
 
     public function items()

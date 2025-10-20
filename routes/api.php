@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\V1\BrandController;
 use App\Http\Controllers\Api\V1\CashBookController;
 use App\Http\Controllers\Api\V1\CategoryController;
 use App\Http\Controllers\Api\V1\CustomerController;
+use App\Http\Controllers\Api\V1\DayBookController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\ProductController;
 use App\Http\Controllers\Api\V1\PurchaseClaimController;
@@ -186,6 +187,13 @@ Route::prefix('v1')->group(function () {
             Route::get('/daily-summary', [CashBookController::class, 'dailySummary']);
             Route::post('/expense', [CashBookController::class, 'storeExpense'])->middleware('permission:manage-cashbook');
             Route::get('/day-details', [CashbookController::class, 'dailyDetails']);
+        });
+        Route::prefix('daybook')->middleware('permission:view-cashbook')->group(function () {
+            Route::get('/', [DayBookController::class, 'index']);
+            Route::get('/day-details', [DaybookController::class, 'dayDetails']);
+            // Route::get('/daily-summary', [CashBookController::class, 'dailySummary']);
+            // Route::post('/expense', [CashBookController::class, 'storeExpense'])->middleware('permission:manage-cashbook');
+            // Route::get('/day-details', [CashbookController::class, 'dailyDetails']);
         });
     });
 });
