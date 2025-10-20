@@ -16,7 +16,7 @@ return new class extends Migration
             $t->date('entry_date');
             $t->string('memo')->nullable();
             $t->foreignId('branch_id')->constrained()->cascadeOnDelete();
-            $t->morphs('reference'); // reference_type, reference_id: Sale, Receipt, etc.
+            $t->nullableMorphs('reference'); // reference_type, reference_id: Sale, Receipt, etc.
             $t->unsignedBigInteger('created_by')->nullable();
             $t->timestamps();
         });

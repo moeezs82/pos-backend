@@ -8,7 +8,7 @@ use InvalidArgumentException;
 
 class AccountingService
 {
-    public function post(int $branchId, string $memo, $reference, array $lines, ?string $entryDate = null, ?int $userId = null): JournalEntry
+    public function post(int $branchId, string $memo, $reference = null, array $lines, ?string $entryDate = null, ?int $userId = null): JournalEntry
     {
         // $lines = [['account_code'=>'1200','debit'=>100,'credit'=>0], ...]
         $sumDebit  = collect($lines)->sum('debit');
@@ -22,8 +22,8 @@ class AccountingService
                 'entry_date' => $entryDate ?? now()->toDateString(),
                 'memo'       => $memo,
                 'branch_id'  => $branchId,
-                'reference_type' => get_class($reference),
-                'reference_id'   => $reference->id,
+                'reference_type' => $reference ? get_class($reference) : null,
+                'reference_id'   => $reference->id ?? null,
                 'created_by'     => $userId,
             ]);
 
@@ -38,5 +38,22 @@ class AccountingService
             }
             return $je;
         });
+    }
+
+    /**
+     * Convenience: map a UI payment method to an account ID.
+     * Change codes as per your chart (e.g., 1000 Cash, 1010 Bank).
+     */
+    public function paymentAccountIdFromMethod(?string $method): ?int
+    {
+        if (!$method) return null;
+
+        return match ($method) {
+            'cash'   => Account::where('code', '1000')->value('id'),
+            'bank'   => Account::where('code', '1010')->value('id'),
+            'card'   => Account::where('code', '1010')->value('id'), // or a Card Clearing account
+            'wallet' => Account::where('code', '1010')->value('id'), // change to Wallet account if you have one
+            default  => null,
+        };
     }
 }

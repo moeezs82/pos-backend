@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\V1\AccountController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BranchController;
 use App\Http\Controllers\Api\V1\BrandController;
@@ -7,6 +8,7 @@ use App\Http\Controllers\Api\V1\CashBookController;
 use App\Http\Controllers\Api\V1\CategoryController;
 use App\Http\Controllers\Api\V1\CustomerController;
 use App\Http\Controllers\Api\V1\DayBookController;
+use App\Http\Controllers\Api\V1\ExpenseController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\ProductController;
 use App\Http\Controllers\Api\V1\PurchaseClaimController;
@@ -126,6 +128,17 @@ Route::prefix('v1')->group(function () {
             Route::delete('/{vendor}', [VendorController::class, 'destroy'])->middleware('permission:manage-vendors');
         });
 
+        Route::prefix('accounts')->middleware('permission:manage-accounts')->group(function () {
+            Route::get('/types', [AccountController::class, 'getTypes']);
+            Route::get('/',      [AccountController::class, 'index']);
+
+            Route::post('/',        [AccountController::class, 'store']);
+            Route::get('/{id}',   [AccountController::class, 'show']);
+            Route::put('/{id}',   [AccountController::class, 'update']);
+            Route::put('/{id}/activate',   [AccountController::class, 'activate']);
+            Route::put('/{id}/deactivate', [AccountController::class, 'deactivate']);
+        });
+
         Route::prefix('sales')->group(function () {
             // --- Returns ---
             Route::prefix('returns')->middleware('permission:manage-sales')->group(function () {
@@ -188,6 +201,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/expense', [CashBookController::class, 'storeExpense'])->middleware('permission:manage-cashbook');
             Route::get('/day-details', [CashbookController::class, 'dailyDetails']);
         });
+        Route::post('/expenses', [ExpenseController::class, 'store']);
         Route::prefix('daybook')->middleware('permission:view-cashbook')->group(function () {
             Route::get('/', [DayBookController::class, 'index']);
             Route::get('/day-details', [DaybookController::class, 'dayDetails']);

@@ -46,6 +46,7 @@ class RolePermissionSeeder extends Seeder
             'manage-branches',
             'view-cashbook',
             'manage-cashbook',
+            'manage-accounts',
             'view-roles',
             'manage-roles',
         ];

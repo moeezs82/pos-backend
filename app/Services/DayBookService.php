@@ -31,49 +31,40 @@ class DayBookService
         int $perPage = 30,
         string $order = 'desc'
     ): array {
-        // Resolve dates (last 30 days inclusive, ending today)
         $to   = $toDate   ? Carbon::parse($toDate)->toDateString() : Carbon::today()->toDateString();
         $from = $fromDate ? Carbon::parse($fromDate)->toDateString() : Carbon::parse($to)->subDays(29)->toDateString();
-
-        // Normalize if from > to
         if (Carbon::parse($from)->gt(Carbon::parse($to))) {
             [$from, $to] = [$to, $from];
         }
 
-        // Sanitize pagination
-        $page = max(1, $page);
-        $perPage = max(1, min(200, $perPage)); // hard cap to avoid huge pages
+        $page    = max(1, $page);
+        $perPage = max(1, min(200, $perPage));
 
-        // Helper to apply optional branch filter
         $applyBranch = function ($q) use ($branchId) {
             if (!is_null($branchId)) $q->where('je.branch_id', $branchId);
             return $q;
         };
 
-        // Opening net (cumulative In-Out) up to day before $from
+        // ------------------ Identify Cash/Bank accounts ------------------
+        // Option A: by explicit codes (edit to your chart)
+        $cashCodes = ['1000', '1010']; // Cash in Hand, Bank
+        // Option B (recommended): a boolean column accounts.is_cash
+        // ->where('a.is_cash', 1)
+
+        // ------------------ Opening CASH balance before $from ------------------
         $openingRow = $applyBranch(
             DB::table('journal_postings as jp')
                 ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
                 ->join('accounts as a', 'a.id', '=', 'jp.account_id')
-                ->join('account_types as at', 'at.id', '=', 'a.account_type_id')
         )
             ->where('je.entry_date', '<', $from)
-            ->selectRaw("
-            SUM(
-              CASE at.code
-                WHEN 'ASSET'     THEN jp.credit - jp.debit
-                WHEN 'LIABILITY' THEN jp.credit - jp.debit
-                WHEN 'EQUITY'    THEN jp.credit - jp.debit
-                WHEN 'INCOME'    THEN jp.credit - jp.debit
-                WHEN 'EXPENSE'   THEN jp.debit  - jp.credit
-              END
-            ) as net
-        ")
+            ->whereIn('a.code', $cashCodes) // or ->where('a.is_cash',1)
+            ->selectRaw("COALESCE(SUM(jp.debit - jp.credit), 0) as cash_bal")
             ->first();
 
-        $opening = round((float)($openingRow->net ?? 0), 2);
+        $opening = round((float)($openingRow->cash_bal ?? 0), 2);
 
-        // Per-day IN/OUT within range
+        // ------------------ Per-day CASH IN/OUT + EXPENSE within range ------------------
         $dailyRows = $applyBranch(
             DB::table('journal_postings as jp')
                 ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
@@ -82,115 +73,111 @@ class DayBookService
         )
             ->whereBetween('je.entry_date', [$from, $to])
             ->groupBy('je.entry_date')
-            ->orderBy('je.entry_date') // we build ascending first; we'll reorder later
+            ->orderBy('je.entry_date')
             ->selectRaw("
-          je.entry_date as d,
-          SUM(CASE at.code
-                WHEN 'ASSET'     THEN jp.credit
-                WHEN 'LIABILITY' THEN jp.credit
-                WHEN 'EQUITY'    THEN jp.credit
-                WHEN 'INCOME'    THEN jp.credit
-                ELSE 0 END)
-          +
-          SUM(CASE at.code WHEN 'EXPENSE' THEN jp.debit ELSE 0 END) as in_amt,
+            je.entry_date as d,
 
-          SUM(CASE at.code
-                WHEN 'ASSET'     THEN jp.debit
-                WHEN 'LIABILITY' THEN jp.debit
-                WHEN 'EQUITY'    THEN jp.debit
-                WHEN 'INCOME'    THEN jp.debit
-                ELSE 0 END)
-          +
-          SUM(CASE at.code WHEN 'EXPENSE' THEN jp.credit ELSE 0 END) as out_amt
+            -- CASH IN: debits to cash/bank
+            COALESCE(SUM(CASE WHEN a.code IN (" . implode(',', array_map(fn($c) => DB::getPdo()->quote($c), $cashCodes)) . ")
+                               THEN jp.debit ELSE 0 END), 0) as in_amt,
+
+            -- CASH OUT: credits to cash/bank
+            COALESCE(SUM(CASE WHEN a.code IN (" . implode(',', array_map(fn($c) => DB::getPdo()->quote($c), $cashCodes)) . ")
+                               THEN jp.credit ELSE 0 END), 0) as out_amt,
+
+            -- EXPENSE total (for reporting)
+            COALESCE(SUM(CASE WHEN at.code = 'EXPENSE' THEN jp.debit ELSE 0 END), 0) as expense_amt
         ")
             ->get();
 
-        // Map results by date for quick lookup (ascending)
+        // Map by date
         $byDate = [];
         foreach ($dailyRows as $r) {
             $byDate[$r->d] = [
-                'in'  => round((float)$r->in_amt, 2),
-                'out' => round((float)$r->out_amt, 2),
+                'in'      => round((float)$r->in_amt, 2),
+                'out'     => round((float)$r->out_amt, 2),
+                'expense' => round((float)$r->expense_amt, 2),
             ];
         }
 
-        // Build continuous list ascending (even if no activity), compute running closing
+        // Build continuous days (ascending), compute running cash closing
         $daysAsc = [];
-        $cursor = Carbon::parse($from);
-        $end    = Carbon::parse($to);
+        $cursor  = Carbon::parse($from);
+        $end     = Carbon::parse($to);
         $running = $opening;
 
-        $totIn = 0.0;
-        $totOut = 0.0;
+        $totIn = $totOut = $totExp = 0.0;
 
         while ($cursor->lte($end)) {
-            $dateStr = $cursor->toDateString();
-            $in  = $byDate[$dateStr]['in']  ?? 0.00;
-            $out = $byDate[$dateStr]['out'] ?? 0.00;
-            $net = round($in - $out, 2);
+            $dStr    = $cursor->toDateString();
+            $in      = $byDate[$dStr]['in']      ?? 0.00;   // cash in (receipts)
+            $out     = $byDate[$dStr]['out']     ?? 0.00;   // cash out (payments)
+            $expense = $byDate[$dStr]['expense'] ?? 0.00;   // informational
+            $netCash = round($in - $out, 2);                // cash movement (ignore expense here)
 
             $dayOpening = $running;
-            $running = round($running + $net, 2);
+            $running    = round($running + $netCash, 2);
 
             $daysAsc[] = [
-                'date'    => $dateStr,
+                'date'    => $dStr,
                 'opening' => $dayOpening,
                 'in'      => $in,
                 'out'     => $out,
-                'net'     => $net,
+                'expense' => $expense,
+                'net'     => round($in - ($out + 0), 2), // if you want to show cash net only
                 'closing' => $running,
             ];
 
             $totIn  = round($totIn  + $in, 2);
             $totOut = round($totOut + $out, 2);
+            $totExp = round($totExp + $expense, 2);
 
             $cursor->addDay();
         }
 
-        // Reorder as requested
-        $ordered = (strtolower($order) === 'asc') ? $daysAsc : array_reverse($daysAsc);
-
-        // Pagination over ordered days
+        // Order and paginate
+        $ordered   = (strtolower($order) === 'asc') ? $daysAsc : array_reverse($daysAsc);
         $totalDays = count($ordered);
-        $lastPage  = max(1, (int) ceil($totalDays / $perPage));
+        $lastPage  = max(1, (int)ceil($totalDays / $perPage));
         $current   = min($page, $lastPage);
         $offset    = ($current - 1) * $perPage;
-
         $pageDays  = array_slice($ordered, $offset, $perPage);
 
-        // Page totals (in/out/net across the page slice)
-        $pageIn  = 0.0;
-        $pageOut = 0.0;
-        foreach ($pageDays as $d) {
-            $pageIn  = round($pageIn  + (float)$d['in'], 2);
-            $pageOut = round($pageOut + (float)$d['out'], 2);
+        $pageIn = $pageOut = $pageExp = 0.0;
+        foreach ($pageDays as $dRow) {
+            $pageIn  = round($pageIn  + (float)$dRow['in'], 2);
+            $pageOut = round($pageOut + (float)$dRow['out'], 2);
+            $pageExp = round($pageExp + (float)$dRow['expense'], 2);
         }
-        $pageNet = round($pageIn - $pageOut, 2);
+        $pageNet = round($pageIn - $pageOut, 2); // cash net on the page slice
 
         return [
-            'branch_id' => $branchId,   // may be null (all branches)
+            'branch_id' => $branchId,
             'from'      => $from,
             'to'        => $to,
             'opening'   => $opening,
-            'totals'    => [
+
+            'totals' => [
                 'in'      => $totIn,
                 'out'     => $totOut,
-                'net'     => round($totIn - $totOut, 2),
-                'closing' => $running, // closing of the last day (end of range)
+                'expense' => $totExp,
+                'net'     => round($totIn - $totOut, 2), // cash net
+                'closing' => $running,                   // cash closing at end
             ],
             'page_totals' => [
-                'in'  => $pageIn,
-                'out' => $pageOut,
-                'net' => $pageNet,
+                'in'      => $pageIn,
+                'out'     => $pageOut,
+                'expense' => $pageExp,
+                'net'     => $pageNet,
             ],
-            'days'       => $pageDays, // returned in requested order (DESC by default)
+            'days' => $pageDays,
             'pagination' => [
                 'total'        => $totalDays,
                 'per_page'     => $perPage,
                 'current_page' => $current,
                 'last_page'    => $lastPage,
             ],
-            'order'      => strtolower($order) === 'asc' ? 'asc' : 'desc',
+            'order' => strtolower($order) === 'asc' ? 'asc' : 'desc',
         ];
     }
 
@@ -219,42 +206,39 @@ class DayBookService
         ?string $search = null,
         bool $includeLines = true
     ): array {
-        $d = Carbon::parse($date)->toDateString();
-        $page = max(1, $page);
+        $d       = Carbon::parse($date)->toDateString();
+        $page    = max(1, $page);
         $perPage = max(1, min(500, $perPage));
-        $order = strtolower($order) === 'desc' ? 'desc' : 'asc';
+        $order   = strtolower($order) === 'desc' ? 'desc' : 'asc';
 
         $applyBranch = function ($q) use ($branchId) {
             if (!is_null($branchId)) $q->where('je.branch_id', $branchId);
             return $q;
         };
 
-        // ---- Opening & Closing ------------------------------------------------
+        // ------------------ Identify Cash/Bank accounts ------------------
+        // Option A: by codes
+        $cashCodes = ['1000', '1010']; // Cash in Hand, Bank
+        // Option B: use a flag column instead (recommended):
+        //   ->where('a.is_cash', 1)
 
-        // Opening net before the day
+        // Prebuild quoted list for selectRaw IN (...)
+        $quotedList = implode(',', array_map(fn($c) => DB::getPdo()->quote($c), $cashCodes));
+
+        // ------------------ Opening CASH balance (before the day) ------------------
         $openingRow = $applyBranch(
             DB::table('journal_postings as jp')
                 ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
                 ->join('accounts as a', 'a.id', '=', 'jp.account_id')
-                ->join('account_types as at', 'at.id', '=', 'a.account_type_id')
         )
             ->where('je.entry_date', '<', $d)
-            ->selectRaw("
-            SUM(
-              CASE at.code
-                WHEN 'ASSET'     THEN jp.credit - jp.debit
-                WHEN 'LIABILITY' THEN jp.credit - jp.debit
-                WHEN 'EQUITY'    THEN jp.credit - jp.debit
-                WHEN 'INCOME'    THEN jp.credit - jp.debit
-                WHEN 'EXPENSE'   THEN jp.debit  - jp.credit
-              END
-            ) as net
-        ")
+            ->whereIn('a.code', $cashCodes) // or ->where('a.is_cash', 1)
+            ->selectRaw("COALESCE(SUM(jp.debit - jp.credit), 0) as cash_bal")
             ->first();
 
-        $opening = round((float)($openingRow->net ?? 0), 2);
+        $opening = round((float)($openingRow->cash_bal ?? 0), 2);
 
-        // Day totals (in/out) for that date
+        // ------------------ Day totals (cash IN/OUT + EXPENSE) ------------------
         $dayTotals = $applyBranch(
             DB::table('journal_postings as jp')
                 ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
@@ -263,37 +247,22 @@ class DayBookService
         )
             ->whereDate('je.entry_date', $d)
             ->selectRaw("
-            SUM(
-              CASE at.code
-                WHEN 'ASSET'     THEN jp.credit
-                WHEN 'LIABILITY' THEN jp.credit
-                WHEN 'EQUITY'    THEN jp.credit
-                WHEN 'INCOME'    THEN jp.credit
-                ELSE 0 END
-            )
-            +
-            SUM(CASE at.code WHEN 'EXPENSE' THEN jp.debit ELSE 0 END) as in_amt,
-
-            SUM(
-              CASE at.code
-                WHEN 'ASSET'     THEN jp.debit
-                WHEN 'LIABILITY' THEN jp.debit
-                WHEN 'EQUITY'    THEN jp.debit
-                WHEN 'INCOME'    THEN jp.debit
-                ELSE 0 END
-            )
-            +
-            SUM(CASE at.code WHEN 'EXPENSE' THEN jp.credit ELSE 0 END) as out_amt
+            -- CASH IN: debits to cash/bank
+            COALESCE(SUM(CASE WHEN a.code IN ($quotedList) THEN jp.debit  ELSE 0 END), 0) as in_amt,
+            -- CASH OUT: credits to cash/bank
+            COALESCE(SUM(CASE WHEN a.code IN ($quotedList) THEN jp.credit ELSE 0 END), 0) as out_amt,
+            -- EXPENSE: debits to expense accounts (informational)
+            COALESCE(SUM(CASE WHEN at.code = 'EXPENSE' THEN jp.debit ELSE 0 END), 0) as expense_amt
         ")
             ->first();
 
-        $totIn  = round((float)($dayTotals->in_amt  ?? 0), 2);
-        $totOut = round((float)($dayTotals->out_amt ?? 0), 2);
-        $totNet = round($totIn - $totOut, 2);
+        $totIn   = round((float)($dayTotals->in_amt      ?? 0), 2);
+        $totOut  = round((float)($dayTotals->out_amt     ?? 0), 2);
+        $totExp  = round((float)($dayTotals->expense_amt ?? 0), 2);
+        $totNet  = round($totIn - $totOut, 2); // cash net
         $closing = round($opening + $totNet, 2);
 
-        // ---- Base aggregated query by journal entry ---------------------------
-
+        // ------------------ Per-entry aggregation (same cash logic) ------------------
         $base = $applyBranch(
             DB::table('journal_postings as jp')
                 ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
@@ -305,7 +274,6 @@ class DayBookService
         if ($referenceType) {
             $base->where('je.reference_type', $referenceType);
         }
-
         if ($search) {
             $base->where(function ($q) use ($search) {
                 $like = '%' . str_replace(['%', '_'], ['\%', '\_'], $search) . '%';
@@ -314,39 +282,23 @@ class DayBookService
             });
         }
 
-        $agg = $base->groupBy('je.id','je.entry_date','je.created_at','je.memo','je.reference_type','je.reference_id')
+        $agg = $base
+            ->groupBy('je.id', 'je.entry_date', 'je.created_at', 'je.memo', 'je.reference_type', 'je.reference_id')
             ->selectRaw("
-                je.id,
-                je.entry_date,
-                je.created_at,
-                je.memo,
-                je.reference_type,
-                je.reference_id,
+            je.id,
+            je.entry_date,
+            je.created_at,
+            je.memo,
+            je.reference_type,
+            je.reference_id,
 
-                -- per-entry IN
-                SUM(
-                  CASE at.code
-                    WHEN 'ASSET'     THEN jp.credit
-                    WHEN 'LIABILITY' THEN jp.credit
-                    WHEN 'EQUITY'    THEN jp.credit
-                    WHEN 'INCOME'    THEN jp.credit
-                    ELSE 0 END
-                )
-                +
-                SUM(CASE at.code WHEN 'EXPENSE' THEN jp.debit ELSE 0 END) as in_amt,
-
-                -- per-entry OUT
-                SUM(
-                  CASE at.code
-                    WHEN 'ASSET'     THEN jp.debit
-                    WHEN 'LIABILITY' THEN jp.debit
-                    WHEN 'EQUITY'    THEN jp.debit
-                    WHEN 'INCOME'    THEN jp.debit
-                    ELSE 0 END
-                )
-                +
-                SUM(CASE at.code WHEN 'EXPENSE' THEN jp.credit ELSE 0 END) as out_amt
-            ");
+            -- per-entry CASH IN
+            COALESCE(SUM(CASE WHEN a.code IN ($quotedList) THEN jp.debit  ELSE 0 END), 0) as in_amt,
+            -- per-entry CASH OUT
+            COALESCE(SUM(CASE WHEN a.code IN ($quotedList) THEN jp.credit ELSE 0 END), 0) as out_amt,
+            -- per-entry EXPENSE
+            COALESCE(SUM(CASE WHEN at.code = 'EXPENSE' THEN jp.debit ELSE 0 END), 0) as expense_amt
+        ");
 
         // Sorting
         switch ($sort) {
@@ -356,9 +308,12 @@ class DayBookService
             case 'out':
                 $agg->orderBy('out_amt', $order);
                 break;
+            case 'expense':
+                $agg->orderBy('expense_amt', $order);
+                break;
             case 'net':
-                // net = in - out
-                $agg->orderByRaw('(SUM(CASE at.code WHEN \'ASSET\' THEN jp.credit WHEN \'LIABILITY\' THEN jp.credit WHEN \'EQUITY\' THEN jp.credit WHEN \'INCOME\' THEN jp.credit ELSE 0 END) + SUM(CASE at.code WHEN \'EXPENSE\' THEN jp.debit ELSE 0 END) - (SUM(CASE at.code WHEN \'ASSET\' THEN jp.debit WHEN \'LIABILITY\' THEN jp.debit WHEN \'EQUITY\' THEN jp.debit WHEN \'INCOME\' THEN jp.debit ELSE 0 END) + SUM(CASE at.code WHEN \'EXPENSE\' THEN jp.credit ELSE 0 END))) ' . $order);
+                // cash net = in - out
+                $agg->orderByRaw('(in_amt - out_amt) ' . $order);
                 break;
             case 'reference_type':
                 $agg->orderBy('je.reference_type', $order)->orderBy('je.id', $order);
@@ -369,10 +324,8 @@ class DayBookService
                 break;
         }
 
-        // Clone for count (count distinct je.id)
-        $countQ = $applyBranch(
-            DB::table('journal_entries as je')
-        )
+        // Count distinct entries
+        $countQ = $applyBranch(DB::table('journal_entries as je'))
             ->whereDate('je.entry_date', $d);
         if ($referenceType) $countQ->where('je.reference_type', $referenceType);
         if ($search) {
@@ -391,24 +344,23 @@ class DayBookService
 
         $rows = $agg->offset($offset)->limit($perPage)->get();
 
-        // Optionally load account lines per journal entry (for UI drill)
+        // Lines for drilldown
         $linesByJe = [];
         if ($includeLines && $rows->count()) {
             $ids = $rows->pluck('id')->all();
-
             $lines = DB::table('journal_postings as jp')
                 ->join('accounts as a', 'a.id', '=', 'jp.account_id')
                 ->join('account_types as at', 'at.id', '=', 'a.account_type_id')
                 ->whereIn('jp.journal_entry_id', $ids)
                 ->selectRaw("
-                    jp.journal_entry_id,
-                    jp.account_id,
-                    a.code as account_code,
-                    a.name as account_name,
-                    at.code as account_type,
-                    jp.debit,
-                    jp.credit
-                ")
+                jp.journal_entry_id,
+                jp.account_id,
+                a.code as account_code,
+                a.name as account_name,
+                at.code as account_type,
+                jp.debit,
+                jp.credit
+            ")
                 ->orderBy('jp.journal_entry_id')
                 ->orderBy('a.code')
                 ->get()
@@ -428,11 +380,12 @@ class DayBookService
             }
         }
 
-        // Build payload rows
+        // Build payload
         $payloadRows = [];
         foreach ($rows as $r) {
             $in  = round((float)$r->in_amt, 2);
             $out = round((float)$r->out_amt, 2);
+            $exp = round((float)$r->expense_amt, 2);
             $payloadRows[] = [
                 'entry_id'       => (int)$r->id,
                 'time'           => optional($r->created_at)->toDateTimeString(),
@@ -441,22 +394,24 @@ class DayBookService
                 'reference_id'   => $r->reference_id,
                 'in'             => $in,
                 'out'            => $out,
-                'net'            => round($in - $out, 2),
+                'expense'        => $exp,                  // informational
+                'net'            => round($in - $out, 2),  // cash net (matches summary)
                 'lines'          => $includeLines ? ($linesByJe[$r->id] ?? []) : null,
             ];
         }
 
         return [
-            'date'    => $d,
+            'date'      => $d,
             'branch_id' => $branchId,
-            'opening' => $opening,
-            'closing' => $closing,
-            'totals'  => [
-                'in'  => $totIn,
-                'out' => $totOut,
-                'net' => $totNet,
+            'opening'   => $opening,
+            'closing'   => $closing,
+            'totals'    => [
+                'in'      => $totIn,
+                'out'     => $totOut,
+                'expense' => $totExp,
+                'net'     => $totNet, // cash net for the day
             ],
-            'rows' => $payloadRows,
+            'rows'       => $payloadRows,
             'pagination' => [
                 'total'        => $total,
                 'per_page'     => $perPage,
