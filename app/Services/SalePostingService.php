@@ -2,7 +2,7 @@
 
 namespace App\Services;
 
-use App\Models\{Sale, StockMovement};
+use App\Models\{Customer, Sale, StockMovement};
 use Illuminate\Support\Facades\DB;
 
 class SalePostingService
@@ -33,7 +33,7 @@ class SalePostingService
         }
 
         $lines = [
-            ['account_code' => '1200', 'debit' => $total,   'credit' => 0],            // AR
+            ['account_code' => '1200', 'debit' => $total,   'credit' => 0, 'party_type' => Customer::class, 'party_id' => $sale->customer_id],            // AR
             ['account_code' => '4000', 'debit' => 0,        'credit' => $revenue],     // Sales
         ];
         if ($tax > 0)  $lines[] = ['account_code' => '2100', 'debit' => 0, 'credit' => $tax]; // Tax payable

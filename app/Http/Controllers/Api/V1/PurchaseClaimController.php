@@ -7,6 +7,7 @@ use App\Http\Response\ApiResponse;
 use App\Models\Purchase;
 use App\Models\PurchaseClaim;
 use App\Models\StockMovement;
+use App\Models\Vendor;
 use App\Services\AccountingService;
 use App\Services\CashSyncService;
 use Illuminate\Http\Request;
@@ -404,6 +405,8 @@ class PurchaseClaimController extends Controller
             'account_code' => $apAccount,
             'debit'        => $claimTotal,
             'credit'       => 0,
+            'party_type' => Vendor::class,
+            'party_id' => $claim->vendor_id
         ];
 
         // CR Inventory for stock portion
@@ -466,7 +469,7 @@ class PurchaseClaimController extends Controller
     protected function postReceiptAccounting(\App\Models\PurchaseClaim $claim, float $amount, string $method, \App\Services\AccountingService $accounting, \App\Services\CashSyncService $cashSync, ?\Illuminate\Http\Request $request = null, bool $creditAp = false): void
     {
         $cashAccount = $cashSync->mapMethodToAccount($method, $claim->branch_id);
-        $apAccount = config('accounts.ap_account', '2000');
+        $apAccount = config('accounts.ap_account', '2000'); //TODO
         $returnsAccount = config('accounts.purchase_returns_account', '4000');
 
         $creditAccount = $creditAp ? $apAccount : $returnsAccount;

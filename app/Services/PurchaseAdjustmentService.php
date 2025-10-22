@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Purchase;
+use App\Models\Vendor;
 use Illuminate\Support\Facades\DB;
 
 class PurchaseAdjustmentService
@@ -58,7 +59,7 @@ class PurchaseAdjustmentService
 
         // AP is opposite of total delta
         if ($deltaTot !== 0.0) {
-            $lines[] = $this->line('2000', -$deltaTot); // AP: if total up, AP credit (+); our helper flips signs
+            $lines[] = $this->line('2000', -$deltaTot, partyType: Vendor::class, partyId:$p->vendor_id); // AP: if total up, AP credit (+); our helper flips signs
         }
 
         // Validate balanced (sum debits == credits)
@@ -80,13 +81,15 @@ class PurchaseAdjustmentService
         );
     }
 
-    private function line(string $accountCode, float $amount): array
+    private function line(string $accountCode, float $amount, $partyType=null, $partyId=null): array
     {
         // positive => debit, negative => credit
         return [
             'account_code' => $accountCode,
             'debit'  => $amount > 0 ? abs($amount) : 0,
             'credit' => $amount < 0 ? abs($amount) : 0,
+            'party_type' => $partyType,
+            'party_id' => $partyId
         ];
     }
 }

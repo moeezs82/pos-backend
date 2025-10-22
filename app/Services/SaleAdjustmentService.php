@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Customer;
 use App\Models\Sale;
 
 class SaleAdjustmentService
@@ -57,7 +58,7 @@ class SaleAdjustmentService
         // AR is opposite of total delta: if total increased, AR should increase (debit AR)
         if ($deltaTot !== 0.0) {
             // AR is an asset; increase => debit; our helper uses positive => debit so pass deltaTot
-            $lines[] = $this->line('1200', $deltaTot); // 1200 = Accounts Receivable
+            $lines[] = $this->line('1200', $deltaTot, partyType: Customer::class, partyId: $s->customer_id); // 1200 = Accounts Receivable
         }
 
         // Validate balanced; if tiny rounding issues occur push small difference to Revenue (4000)
@@ -81,13 +82,15 @@ class SaleAdjustmentService
         );
     }
 
-    private function line(string $accountCode, float $amount): array
+    private function line(string $accountCode, float $amount, $partyType=null, $partyId=null): array
     {
         // positive => debit, negative => credit
         return [
             'account_code' => $accountCode,
             'debit'  => $amount > 0 ? abs($amount) : 0,
             'credit' => $amount < 0 ? abs($amount) : 0,
+            'party_type' => $partyType,
+            'partyId' => $partyId
         ];
     }
 }

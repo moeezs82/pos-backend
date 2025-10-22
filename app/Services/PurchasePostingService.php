@@ -2,7 +2,7 @@
 
 namespace App\Services;
 
-use App\Models\{Purchase, PurchaseItem};
+use App\Models\{Purchase, PurchaseItem, Vendor};
 use Illuminate\Support\Facades\DB;
 
 class PurchasePostingService
@@ -31,7 +31,7 @@ class PurchasePostingService
         $lines = [
             ['account_code' => '1400', 'debit' => $subtotalNet, 'credit' => 0], // Inventory
             ['account_code' => '2105', 'debit' => $tax,         'credit' => 0], // Input VAT
-            ['account_code' => '2000', 'debit' => 0,           'credit' => $total], // AP
+            ['account_code' => '2000', 'debit' => 0,           'credit' => $total, 'party_type' => Vendor::class, 'party_id' => $p->vendor_id], // AP
         ];
 
         $this->acc->post(

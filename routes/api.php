@@ -20,12 +20,17 @@ use App\Http\Controllers\Api\V1\SaleReturnController;
 use App\Http\Controllers\Api\V1\StockController;
 use App\Http\Controllers\Api\V1\UserController;
 use App\Http\Controllers\Api\V1\VendorController;
+use App\Models\Vendor;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/user', function (Request $request) {
     return $request->user();
 })->middleware('auth:sanctum');
+
+Route::get('/test', function() {
+    return Vendor::class;
+});
 
 Route::prefix('v1')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);

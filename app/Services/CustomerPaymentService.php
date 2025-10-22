@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Customer;
 use App\Models\Receipt;
 use App\Models\ReceiptAllocation;
 use Illuminate\Support\Facades\Validator;
@@ -71,7 +72,7 @@ class CustomerPaymentService
                 reference: $r,
                 lines: [
                     ['account_code' => $cashAccount->code, 'debit' => $r->amount, 'credit' => 0], // cash/bank debit
-                    ['account_code' => '1200',               'debit' => 0,         'credit' => $r->amount], // AR credit
+                    ['account_code' => '1200',               'debit' => 0,         'credit' => $r->amount, 'party_type'=>Customer::class,'party_id'=>$r->customer_id], // AR credit
                 ],
                 entryDate: $r->received_at,
                 userId: $r->created_by

@@ -7,6 +7,7 @@ use App\Models\CashTransaction;
 use App\Models\PaymentMethodAccount;
 use App\Models\PurchaseClaimReceipt;
 use App\Models\SaleReturnRefund;
+use App\Models\Vendor;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\ValidationException;
 
@@ -97,7 +98,7 @@ class CashSyncService
             memo: "Purchase Payment #{$pp->id} for {$pp->purchase_id}",
             reference: $pp,
             lines: [
-                ['account_code' => '2000',              'debit' => (float)$pp->amount, 'credit' => 0], // AP
+                ['account_code' => '2000',              'debit' => (float)$pp->amount, 'credit' => 0, 'party_type' => Vendor::class, 'party_id' => $pp->vendor_id], // AP
                 ['account_code' => $cashBankAccountCode, 'debit' => 0,                  'credit' => (float)$pp->amount], // Cash/Bank
             ],
             entryDate: optional($pp->paid_at)->toDateString() ?? now()->toDateString(),

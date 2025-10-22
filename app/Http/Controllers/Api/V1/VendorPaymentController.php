@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Models\Vendor;
 use App\Models\VendorPayment;
 use App\Models\VendorPaymentAllocation;
 use App\Services\AccountingService;
@@ -48,7 +49,7 @@ class VendorPaymentController extends Controller
                 memo: "Vendor payment #{$vp->id}",
                 reference: $vp,
                 lines: [
-                    ['account_code' => '2000',               'debit' => $vp->amount, 'credit' => 0], // reduce AP
+                    ['account_code' => '2000',               'debit' => $vp->amount, 'credit' => 0, 'party_type' => Vendor::class, 'party_id' => $vp->vendor_id], // reduce AP
                     ['account_code' => $cashAccount->code,   'debit' => 0,           'credit' => $vp->amount], // cash/bank credit
                 ],
                 entryDate: $vp->paid_at,

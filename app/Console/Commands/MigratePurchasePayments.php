@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use App\Models\PurchasePayment;
+use App\Models\Vendor;
 use App\Models\VendorPayment;
 use App\Services\AccountingService;
 use App\Services\CashSyncService;
@@ -57,7 +58,7 @@ class MigratePurchasePayments extends Command
                             "Migrated purchase_payment #{$pp->id}",
                             $vp,
                             [
-                                ['account_code' => '2000',              'debit' => $vp->amount, 'credit' => 0],
+                                ['account_code' => '2000',              'debit' => $vp->amount, 'credit' => 0, 'party_type' => Vendor::class, 'party_id' => $vp->vendor_id],
                                 ['account_code' => $cashAccount->code,  'debit' => 0,           'credit' => $vp->amount],
                             ],
                             $vp->paid_at ? $vp->paid_at->toDateString() : now()->toDateString(),

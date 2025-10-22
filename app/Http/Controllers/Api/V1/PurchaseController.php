@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
 use App\Models\Purchase;
 use App\Models\StockMovement;
+use App\Models\Vendor;
 use App\Services\VendorPaymentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -391,11 +392,11 @@ class PurchaseController extends Controller
             // Post delta JE (goods to Inventory, AP opposite; tax handled by header edits if any)
             app(\App\Services\AccountingService::class)->post(
                 branchId: $purchase->branch_id,
-                memo: "Purchase #{$purchase->invoice_no} - add item",
+                memo: "Purchase #{$purchase->invoice_no} - add item productId: $item->product_id",
                 reference: $purchase,
                 lines: [
                     ['account_code' => '1400', 'debit' => $item->total, 'credit' => 0],              // Inventory
-                    ['account_code' => '2000', 'debit' => 0, 'credit' => $item->total],              // AP
+                    ['account_code' => '2000', 'debit' => 0, 'credit' => $item->total, 'party_type' => Vendor::class, 'party_id' => $purchase->vendor_id],              // AP
                 ],
                 entryDate: now()->toDateString(),
                 userId: auth()->id()
@@ -448,7 +449,7 @@ class PurchaseController extends Controller
                     reference: $purchase,
                     lines: [
                         ['account_code' => '1400', 'debit' => $lineValue, 'credit' => 0],
-                        ['account_code' => '2000', 'debit' => 0, 'credit' => $lineValue],
+                        ['account_code' => '2000', 'debit' => 0, 'credit' => $lineValue, 'party_type' => Vendor::class, 'party_id' => $purchase->vendor_id],
                     ],
                     entryDate: now()->toDateString(),
                     userId: auth()->id()
@@ -468,7 +469,7 @@ class PurchaseController extends Controller
                 $ppvDelta    = round($lineValue - $inventoryCr, 2);
 
                 $lines = [
-                    ['account_code' => '2000', 'debit' => $lineValue, 'credit' => 0],
+                    ['account_code' => '2000', 'debit' => $lineValue, 'credit' => 0, 'party_type' => Vendor::class, 'party_id' => $purchase->vendor_id],
                     ['account_code' => '1400', 'debit' => 0, 'credit' => $inventoryCr],
                 ];
                 if ($ppvDelta != 0.0) {
@@ -507,7 +508,7 @@ class PurchaseController extends Controller
                         reference: $purchase,
                         lines: [
                             ['account_code' => '5205', 'debit' => $amt > 0 ? $amt : 0, 'credit' => $amt < 0 ? abs($amt) : 0],
-                            ['account_code' => '2000', 'debit' => $amt < 0 ? abs($amt) : 0, 'credit' => $amt > 0 ? $amt : 0],
+                            ['account_code' => '2000', 'debit' => $amt < 0 ? abs($amt) : 0, 'credit' => $amt > 0 ? $amt : 0, 'party_type' => Vendor::class, 'party_id' => $purchase->vendor_id],
                         ],
                         entryDate: now()->toDateString(),
                         userId: auth()->id()
@@ -553,7 +554,7 @@ class PurchaseController extends Controller
 
                 // Build lines
                 $lines = [
-                    ['account_code' => '2000', 'debit' => $lineValue,            'credit' => 0.00], // reduce AP
+                    ['account_code' => '2000', 'debit' => $lineValue,            'credit' => 0.00, 'party_type' => Vendor::class, 'party_id' => $purchase->vendor_id], // reduce AP
                     ['account_code' => '1400', 'debit' => 0.00,                  'credit' => $inventoryCr], // reduce Inventory
                 ];
                 if ($ppvDelta != 0.00) {

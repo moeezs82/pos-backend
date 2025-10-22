@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
 use App\Models\CashTransaction;
+use App\Models\Customer;
 use App\Models\Sale;
 use App\Models\SaleItem;
 use App\Models\SaleReturn;
@@ -576,7 +577,7 @@ class SaleReturnController extends Controller
             // Revenue reversal
             if ($salesValue > 0) {
                 $lines[] = ['account_code' => $salesReturnsAcc,   'debit' => $salesValue,   'credit' => 0];
-                $lines[] = ['account_code' => $receiveableAcc, 'debit' => 0,             'credit' => $salesValue];
+                $lines[] = ['account_code' => $receiveableAcc, 'debit' => 0,             'credit' => $salesValue, 'party_type' => Customer::class, 'party_id' => $return->customer_id];
             }
 
             // Cost reversal (at original unit_cost)

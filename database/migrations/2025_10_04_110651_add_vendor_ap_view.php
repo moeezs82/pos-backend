@@ -7,38 +7,38 @@ return new class extends Migration
 {
     public function up(): void
     {
-        // Drop view if exists (separate statement)
+        $apId = (int) env('AP_ACCOUNT_ID', 2000); // set in .env or swap to config(...)
+        $vendorType = addslashes(\App\Models\Vendor::class);
+
         DB::statement('DROP VIEW IF EXISTS vendors_ap_view');
 
-        // Create view (single statement)
-        DB::statement(
-            <<<'SQL'
+        $sql = <<<SQL
 CREATE VIEW vendors_ap_view AS
 SELECT
   v.id AS vendor_id,
   CONCAT_WS(' ', v.first_name, v.last_name) AS vendor_name,
-  COALESCE(p.tot_purchases, 0.0) AS total_purchases,
-  COALESCE(vp.tot_payments, 0.0) AS total_payments,
-  COALESCE(p.tot_purchases, 0.0) - COALESCE(vp.tot_payments, 0.0) AS balance,
-  -- Use IF() to get the later date in a MariaDB-compatible way
-  CASE
-    WHEN COALESCE(p.last_purchase_date, '1970-01-01') >= COALESCE(vp.last_payment_date, '1970-01-01')
-      THEN COALESCE(p.last_purchase_date, '1970-01-01')
-    ELSE COALESCE(vp.last_payment_date, '1970-01-01')
-  END AS last_activity_at
+
+  COALESCE(ap.tot_purchases, 0.0) AS total_purchases,
+  COALESCE(ap.tot_payments, 0.0)  AS total_payments,
+  COALESCE(ap.balance, 0.0)       AS balance,
+  COALESCE(ap.last_activity_at, '1970-01-01') AS last_activity_at
+
 FROM vendors v
 LEFT JOIN (
-  SELECT vendor_id, SUM(total) AS tot_purchases, MAX(invoice_date) AS last_purchase_date
-  FROM purchases
-  GROUP BY vendor_id
-) p ON p.vendor_id = v.id
-LEFT JOIN (
-  SELECT vendor_id, SUM(amount) AS tot_payments, MAX(paid_at) AS last_payment_date
-  FROM vendor_payments
-  GROUP BY vendor_id
-) vp ON vp.vendor_id = v.id;
-SQL
-        );
+  SELECT
+    jp.party_id AS vendor_id,
+    SUM(CASE WHEN jp.credit > 0 THEN jp.credit ELSE 0 END) AS tot_purchases,
+    SUM(CASE WHEN jp.debit  > 0 THEN jp.debit  ELSE 0 END) AS tot_payments,
+    SUM(jp.credit - jp.debit)                              AS balance,
+    MAX(jp.created_at)                                   AS last_activity_at
+  FROM journal_postings jp
+  WHERE jp.party_type = '{$vendorType}'
+    AND jp.account_id = {$apId}
+  GROUP BY jp.party_id
+) ap ON ap.vendor_id = v.id
+SQL;
+
+        DB::statement($sql);
     }
 
     public function down(): void
