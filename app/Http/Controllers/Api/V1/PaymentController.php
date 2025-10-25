@@ -5,13 +5,14 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
 use App\Models\Sale;
+use App\Services\CustomerPaymentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 class PaymentController extends Controller
 {
-    public function store(Request $request, $saleId)
+    public function store(Request $request, $saleId, CustomerPaymentService $cps)
     {
         $sale = Sale::findOrFail($saleId);
 
@@ -22,9 +23,18 @@ class PaymentController extends Controller
             'received_by' => 'nullable|integer',
             'received_on' => 'nullable|date'
         ]);
+        $data['customer_id'] = $sale->customer_id;
+        $data['branch_id'] = $sale->branch_id;
+        $data['reference'] = "Payment received for Sale $sale->invoice_no";
+        $data['memo'] = "Payment received for Sale $sale->invoice_no";
+        $data['allocations'][] = [
+            'sale_id' => $sale->id,
+            'amount' => $data['amount']
+        ];
 
-        return DB::transaction(function () use ($sale, $data) {
-            $payment = $sale->payments()->create($data);
+        return DB::transaction(function () use ($sale, $data, $cps) {
+            // $payment = $sale->payments()->create($data);
+            $payment = $cps->create($data);
             $this->updateSaleStatus($sale);
 
 
@@ -35,29 +45,29 @@ class PaymentController extends Controller
         });
     }
 
-    public function update(Request $request, $saleId, $paymentId)
-    {
-        $sale    = Sale::findOrFail($saleId);
-        $payment = $sale->payments()->findOrFail($paymentId);
+    // public function update(Request $request, $saleId, $paymentId)
+    // {
+    //     $sale    = Sale::findOrFail($saleId);
+    //     $payment = $sale->payments()->findOrFail($paymentId);
 
-        $data = $request->validate([
-            'amount'      => 'sometimes|numeric|min:1',
-            'method'      => ['sometimes', Rule::in(['cash', 'card', 'bank', 'wallet'])],
-            'reference'   => 'nullable|string',
-            'received_by' => 'nullable|integer',
-            'received_on' => 'nullable|date'
-        ]);
+    //     $data = $request->validate([
+    //         'amount'      => 'sometimes|numeric|min:1',
+    //         'method'      => ['sometimes', Rule::in(['cash', 'card', 'bank', 'wallet'])],
+    //         'reference'   => 'nullable|string',
+    //         'received_by' => 'nullable|integer',
+    //         'received_on' => 'nullable|date'
+    //     ]);
 
-        return DB::transaction(function () use ($sale, $payment, $data) {
-            $payment->update($data);
-            $this->updateSaleStatus($sale);
+    //     return DB::transaction(function () use ($sale, $payment, $data) {
+    //         $payment->update($data);
+    //         $this->updateSaleStatus($sale);
 
-            return ApiResponse::success(
-                ['payment' => $payment],
-                'Payment updated successfully'
-            );
-        });
-    }
+    //         return ApiResponse::success(
+    //             ['payment' => $payment],
+    //             'Payment updated successfully'
+    //         );
+    //     });
+    // }
 
     public function destroy($saleId, $paymentId)
     {

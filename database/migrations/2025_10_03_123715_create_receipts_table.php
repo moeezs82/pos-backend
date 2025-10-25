@@ -15,7 +15,8 @@ return new class extends Migration
         Schema::create('receipts', function (Blueprint $t) {
             $t->id();
             $t->date('received_at')->default(DB::raw('CURRENT_DATE'));
-            $t->foreignId('branch_id')->constrained()->cascadeOnDelete();
+            $t->foreignId('branch_id')->nullable()->constrained()->nullOnDelete();
+            $t->foreignId('sale_id')->nullable()->constrained()->cascadeOnDelete();
             $t->foreignId('customer_id')->nullable()->constrained()->nullOnDelete();
             $t->string('method')->nullable(); // cash|bank|card|wallet
             $t->decimal('amount', 18, 2);

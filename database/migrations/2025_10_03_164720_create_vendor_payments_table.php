@@ -13,8 +13,9 @@ return new class extends Migration
     {
         Schema::create('vendor_payments', function (Blueprint $t) {
             $t->id();
-            $t->foreignId('vendor_id')->constrained()->cascadeOnDelete();
-            $t->foreignId('branch_id')->constrained()->cascadeOnDelete();
+            $t->foreignId('vendor_id')->nullable()->constrained()->cascadeOnDelete();
+            $t->foreignId('purchase_id')->nullable()->constrained()->nullOnDelete();
+            $t->foreignId('branch_id')->nullable()->constrained()->cascadeOnDelete();
             $t->date('paid_at')->default(now());
             $t->string('method')->default('bank'); // cash/bank/card/wallet
             $t->decimal('amount', 18, 2);

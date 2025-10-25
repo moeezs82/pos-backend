@@ -15,7 +15,7 @@ return new class extends Migration
             $table->id();
             $table->string('invoice_no')->unique();
             $table->unsignedBigInteger('customer_id')->nullable();
-            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('branch_id')->nullable();
             $table->decimal('subtotal', 15, 2);
             $table->decimal('discount', 15, 2)->default(0);
             $table->decimal('tax', 15, 2)->default(0);
@@ -25,7 +25,7 @@ return new class extends Migration
             $table->softDeletes();
 
             $table->foreign('customer_id')->references('id')->on('customers')->nullOnDelete();
-            $table->foreign('branch_id')->references('id')->on('branches')->cascadeOnDelete();
+            $table->foreign('branch_id')->references('id')->on('branches')->nullOnDelete();
         });
     }
 

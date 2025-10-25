@@ -15,7 +15,7 @@ return new class extends Migration
             $table->id();
             $table->unsignedBigInteger('sale_id');
             $table->unsignedBigInteger('customer_id')->nullable();
-            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('branch_id')->nullable();
             $table->string('return_no')->unique();
             $table->decimal('subtotal', 15, 2);
             $table->decimal('tax', 15, 2)->default(0);

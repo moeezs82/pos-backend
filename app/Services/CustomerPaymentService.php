@@ -31,16 +31,16 @@ class CustomerPaymentService
     public function create(array $data, $isPostAccount = true): Receipt
     {
         $v = Validator::make($data, [
-            'customer_id' => 'required|exists:customers,id',
-            'branch_id'   => 'required|exists:branches,id',
+            'customer_id' => 'nullable|exists:customers,id',
+            'branch_id'   => 'nullable|exists:branches,id',
             'received_at' => 'nullable|date',
             'method'      => 'required|string|in:cash,bank,card,wallet',
             'amount'      => 'required|numeric|min:0.01',
             'reference'   => 'nullable|string',
             'note'        => 'nullable|string',
-            'allocations' => 'array',
-            'allocations.*.sale_id' => 'required_with:allocations|exists:sales,id',
-            'allocations.*.amount'  => 'required_with:allocations|numeric|min:0.01',
+            // 'allocations' => 'array',
+            // 'allocations.*.sale_id' => 'required_with:allocations|exists:sales,id',
+            // 'allocations.*.amount'  => 'required_with:allocations|numeric|min:0.01',
         ]);
 
         if ($v->fails()) {
@@ -50,6 +50,7 @@ class CustomerPaymentService
         // create receipt (DB model Receipt assumed)
         $r = Receipt::create([
             'customer_id' => $data['customer_id'],
+            'sale_id' => $data['sale_id'] ?? null,
             'branch_id'   => $data['branch_id'],
             'received_at' => $data['received_at'] ?? now()->toDateString(),
             'method'      => $data['method'],
@@ -68,7 +69,7 @@ class CustomerPaymentService
             // I use '1200' as Accounts Receivable (adjust if your chart differs)
             $this->accounting->post(
                 branchId: $r->branch_id,
-                memo: "Customer receipt #{$r->id}",
+                memo: $data['memo']??"Customer receipt #{$r->id}",
                 reference: $r,
                 lines: [
                     ['account_code' => $cashAccount->code, 'debit' => $r->amount, 'credit' => 0], // cash/bank debit
@@ -80,13 +81,13 @@ class CustomerPaymentService
         }
 
         // Allocations: apply receipt to sales (if provided); otherwise caller can allocate later
-        foreach (($data['allocations'] ?? []) as $al) {
-            ReceiptAllocation::create([
-                'receipt_id' => $r->id,
-                'sale_id'    => $al['sale_id'],
-                'amount'     => round($al['amount'], 2),
-            ]);
-        }
+        // foreach (($data['allocations'] ?? []) as $al) {
+        //     ReceiptAllocation::create([
+        //         'receipt_id' => $r->id,
+        //         'sale_id'    => $al['sale_id'],
+        //         'amount'     => round($al['amount'], 2),
+        //     ]);
+        // }
 
         return $r;
     }

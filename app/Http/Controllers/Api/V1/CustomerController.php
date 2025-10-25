@@ -15,12 +15,17 @@ class CustomerController extends Controller
 {
     public function index(Request $request)
     {
-        $page    = max(1, (int)$request->get('page', 1));
-        $perPage = max(1, min(500, (int)$request->get('per_page', 15)));
-        $search  = trim((string)$request->get('search', ''));
-        $branchId = $request->integer('branch_id'); // optional, if you want per-branch AR
+        // ---- Inputs ----
+        $page     = max(1, (int)$request->get('page', 1));
+        $perPage  = max(1, min(500, (int)$request->get('per_page', 15)));
+        $search   = trim((string)$request->get('search', ''));
+        $includeBalance = filter_var($request->boolean('include_balance'), FILTER_VALIDATE_BOOLEAN);
+        $branchId = $request->integer('branch_id'); // optional
 
-        // ---------- Phase 1: get just the IDs for this page (cheap) ----------
+        // If you prefer an explicit flag name like ?with_balance=1, use that instead:
+        // $includeBalance = $request->boolean('with_balance');
+
+        // ---- Base query (cheap) ----
         $idQuery = Customer::query()->select('id');
 
         if ($search !== '') {
@@ -32,99 +37,107 @@ class CustomerController extends Controller
             });
         }
 
-        // Light sort that can use a name index; adjust if you prefer created_at
-        $idQuery->orderBy('first_name')->orderBy('last_name');
+        // Light + indexable sort (tweak to your indexed columns)
+        $idQuery->orderBy('first_name')->orderBy('last_name')->orderBy('id');
 
         $total = (clone $idQuery)->count();
-        $ids   = (clone $idQuery)
+
+        // ---- Page of IDs ----
+        $ids = (clone $idQuery)
             ->skip(($page - 1) * $perPage)
             ->take($perPage)
             ->pluck('id')
             ->all();
 
+        // Early return if no rows
         if (empty($ids)) {
-            $data = [
+            return ApiResponse::success([
                 'customers'     => [],
                 'total'         => $total,
                 'per_page'      => $perPage,
                 'current_page'  => $page,
                 'last_page'     => (int)ceil($total / $perPage),
-            ];
-            return ApiResponse::success($data, 'Customers fetched successfully');
+            ], 'Customers fetched successfully');
         }
 
-        // ---------- Phase 2: pre-aggregated subqueries (NOT the view) ----------
-        // Sales aggregate (optionally filter by branch/status if that’s your rule)
-        $salesAgg = DB::table('sales')
-            ->select([
-                'customer_id',
-                DB::raw('SUM(total)        AS tot_sales'),
-                DB::raw('MAX(invoice_date) AS last_sale_date'),
-            ])
-            ->whereIn('customer_id', $ids)
-            // ->when($branchId, fn($q) => $q->where('branch_id', $branchId))
-            // ->where('status', 'posted')
-            ->groupBy('customer_id');
-
-        // Receipts: include both allocated and unallocated portions
-        // 1) Per-receipt: how much applied to invoices?
-        $receiptPer = DB::table('receipts as r')
-            ->leftJoin('receipt_allocations as ra', 'ra.receipt_id', '=', 'r.id')
-            ->select([
-                'r.id',
-                'r.customer_id',
-                DB::raw('COALESCE(SUM(ra.amount), 0) AS applied_sum'),
-                'r.amount',
-                'r.received_at',
-            ])
-            ->whereIn('r.customer_id', $ids)
-            ->when($branchId, fn($q) => $q->where('r.branch_id', $branchId))
-            // ->where('r.status', 'cleared') // if you track status
-            ->groupBy('r.id', 'r.customer_id', 'r.amount', 'r.received_at');
-
-        // 2) Roll up per customer (applied + unallocated)
-        $rcAgg = DB::query()
-            ->fromSub($receiptPer, 'rp')
-            ->select([
-                'rp.customer_id',
-                DB::raw('SUM(rp.applied_sum) AS tot_applied'),
-                DB::raw('SUM(GREATEST(rp.amount - rp.applied_sum, 0)) AS tot_unallocated'),
-                DB::raw('MAX(rp.received_at) AS last_receipt_date'),
-            ])
-            ->groupBy('rp.customer_id');
-
-        // Final page rows
-        $rows = Customer::query()
-            ->whereIn('customers.id', $ids)
-            ->leftJoinSub($salesAgg, 's',  's.customer_id',  '=', 'customers.id')
-            ->leftJoinSub($rcAgg,    'rc', 'rc.customer_id', '=', 'customers.id')
-            ->select([
-                'customers.*',
-                DB::raw('COALESCE(s.tot_sales, 0.0) AS total_sales'),
-                // compute total_receipts from applied + unallocated
-                DB::raw('(COALESCE(rc.tot_applied,0) + COALESCE(rc.tot_unallocated,0)) AS total_receipts'),
-                DB::raw('(COALESCE(s.tot_sales, 0.0) - (COALESCE(rc.tot_applied,0) + COALESCE(rc.tot_unallocated,0))) AS remaining_balance'),
-                DB::raw("
-                CASE
-                  WHEN COALESCE(s.last_sale_date,'1970-01-01') >= COALESCE(rc.last_receipt_date,'1970-01-01')
-                    THEN COALESCE(s.last_sale_date,'1970-01-01')
-                  ELSE COALESCE(rc.last_receipt_date,'1970-01-01')
-                END AS last_activity_at
-            "),
-            ])
-            // Preserve original order of IDs (safe: $ids are integers)
-            ->orderByRaw('FIELD(customers.id, ' . implode(',', array_map('intval', $ids)) . ')')
+        // ---- Fetch models for those IDs (preserve order) ----
+        $customers = Customer::query()
+            ->whereIn('id', $ids)
+            ->orderByRaw('FIELD(id, ' . implode(',', array_map('intval', $ids)) . ')')
             ->get();
 
-        $data = [
-            'customers'     => CustomerResource::collection($rows),
+        // ---- Optional: pull balances only for this page ----
+        $balancesById = [];
+        $balancesById = [];
+        if ($includeBalance) {
+            $customerFqcn = \App\Models\Customer::class;
+            $partyTypes   = ['customer', $customerFqcn];
+
+            $jp = DB::table('journal_postings as jp')
+                ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
+                ->selectRaw("
+                    jp.party_id AS customer_id,
+                    SUM(CASE WHEN jp.debit  > 0 THEN jp.debit  ELSE 0 END) AS tot_sales,
+                    SUM(CASE WHEN jp.credit > 0 THEN jp.credit ELSE 0 END) AS tot_receipts,
+                    SUM(jp.debit - jp.credit)                              AS balance,
+                    MAX(COALESCE(jp.created_at, je.created_at))            AS last_activity_at
+                ")
+                ->whereIn('jp.party_type', $partyTypes)
+                ->whereIn('jp.party_id', $ids);
+
+            // Filter by branch on journal_entries
+            if ($branchId > 0) {
+                $jp->where('je.branch_id', $branchId);
+            }
+
+            // Optional: restrict to AR accounts if needed
+            // $jp->whereIn('jp.account_id', [1200,1201]);
+
+            $balancesById = $jp->groupBy('jp.party_id')
+                ->get()
+                ->mapWithKeys(function ($row) {
+                    return [(int)$row->customer_id => [
+                        'total_sales'      => (float)$row->tot_sales,
+                        'total_receipts'   => (float)$row->tot_receipts,
+                        'balance'          => (float)$row->balance,
+                        'last_activity_at' => $row->last_activity_at ? (string)$row->last_activity_at : null,
+                    ]];
+                })
+                ->all();
+        }
+
+        // ---- Transform output ----
+        // If your CustomerResource can accept extra meta, you can inject it there.
+        // Otherwise merge balance fields here before wrapping in the resource.
+        $outCustomers = $customers->map(function ($c) use ($includeBalance, $balancesById) {
+            $base = (new CustomerResource($c))->toArray(request());
+
+            if (!$includeBalance) {
+                return $base;
+            }
+
+            $b = $balancesById[$c->id] ?? [
+                'total_sales'      => 0.0,
+                'total_receipts'   => 0.0,
+                'balance'          => 0.0,
+                'last_activity_at' => null,
+            ];
+
+            return array_merge($base, [
+                'total_sales'      => $b['total_sales'],
+                'total_receipts'   => $b['total_receipts'],
+                'balance'          => $b['balance'],
+                'last_activity_at' => $b['last_activity_at'],
+            ]);
+        });
+
+        return ApiResponse::success([
+            'customers'     => $outCustomers, // already a collection of arrays
             'total'         => $total,
             'per_page'      => $perPage,
             'current_page'  => $page,
             'last_page'     => (int)ceil($total / $perPage),
-        ];
-
-        return ApiResponse::success($data, 'Customers fetched successfully');
+        ], 'Customers fetched successfully');
     }
 
 
@@ -139,9 +152,31 @@ class CustomerController extends Controller
         return ApiResponse::success(new CustomerResource($customer), 'Customer created successfully');
     }
 
-    public function show(Customer $customer)
+    public function show(Request $request, Customer $customer)
     {
-        return ApiResponse::success(new CustomerResource($customer), 'Customer details fetched successfully');
+        $branchId   = $request->integer('branch_id');
+        $partyTypes = ['customer', \App\Models\Customer::class];
+
+        $ar = DB::table('journal_postings as jp')
+            ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
+            ->selectRaw("
+            SUM(CASE WHEN jp.debit  > 0 THEN jp.debit  ELSE 0 END) AS total_sales,
+            SUM(CASE WHEN jp.credit > 0 THEN jp.credit ELSE 0 END) AS total_receipts,
+            SUM(jp.debit - jp.credit) AS balance
+        ")
+            ->whereIn('jp.party_type', $partyTypes)
+            ->where('jp.party_id', $customer->id)
+            ->when($branchId, fn($q) => $q->where('je.branch_id', $branchId))
+            ->first();
+
+        $res = (new CustomerResource($customer))->toArray($request);
+
+        // Attach just the simple totals
+        $res['total_sales']    = (float)($ar->total_sales ?? 0);
+        $res['total_receipts'] = (float)($ar->total_receipts ?? 0);
+        $res['balance']        = (float)($ar->balance ?? 0);
+
+        return ApiResponse::success($res, 'Customer fetched successfully');
     }
 
     public function update(CustomerRequest $request, Customer $customer)
@@ -158,5 +193,262 @@ class CustomerController extends Controller
     {
         $customer->delete();
         return ApiResponse::success(null, 'Customer deleted successfully');
+    }
+
+    public function sales(Request $request, Customer $customer)
+    {
+        $page     = max(1, (int)$request->get('page', 1));
+        $perPage  = max(1, min(100, (int)$request->get('per_page', 15)));
+        $branchId = $request->integer('branch_id');
+
+        // Count
+        $countQ = DB::table('sales')->where('customer_id', $customer->id);
+        if ($branchId) $countQ->where('branch_id', $branchId);
+        $total = (clone $countQ)->count();
+
+        // Paged rows with allocated & open
+        $rows = DB::table('sales as s')
+            ->leftJoin('receipts as r', 'r.sale_id', '=', 's.id')
+            ->selectRaw("
+            s.id, s.invoice_no, s.invoice_date, s.branch_id, s.total,
+            COALESCE(SUM(r.amount),0) AS allocated,
+            (s.total - COALESCE(SUM(r.amount),0)) AS open_amount
+        ")
+            ->where('s.customer_id', $customer->id)
+            ->when($branchId, fn($q) => $q->where('s.branch_id', $branchId))
+            ->groupBy('s.id', 's.invoice_no', 's.invoice_date', 's.branch_id', 's.total')
+            ->orderByDesc('s.invoice_date')
+            ->skip(($page - 1) * $perPage)
+            ->take($perPage)
+            ->get()
+            ->map(fn($r) => [
+                'id'           => (int)$r->id,
+                'invoice_no'   => $r->invoice_no,
+                'invoice_date' => (string)$r->invoice_date,
+                'branch_id'    => (int)$r->branch_id,
+                'total'        => (float)$r->total,
+                'allocated'    => (float)$r->allocated,
+                'open_amount'  => (float)$r->open_amount,
+            ]);
+
+        return ApiResponse::success([
+            'items'        => $rows,
+            'total'        => $total,
+            'per_page'     => $perPage,
+            'current_page' => $page,
+            'last_page'    => (int)ceil($total / $perPage),
+        ], 'Customer sales fetched successfully');
+    }
+
+    public function receipts(Request $request, Customer $customer)
+    {
+        $page     = max(1, (int)$request->get('page', 1));
+        $perPage  = max(1, min(100, (int)$request->get('per_page', 15)));
+        $branchId = $request->integer('branch_id');
+
+        // We support both 'customer' and FQCN saved in party_type
+        $partyTypes = ['customer', \App\Models\Customer::class];
+
+        // ---------- Count (credits to AR for this customer) ----------
+        $countQ = DB::table('journal_postings as jp')
+            ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
+            ->whereIn('jp.party_type', $partyTypes)
+            ->where('jp.party_id', $customer->id)
+            ->where('jp.credit', '>', 0);
+
+        // if ($branchId) {
+        //     $countQ->where('je.branch_id', $branchId);
+        // }
+
+        $total = (clone $countQ)->count();
+
+        // ---------- Page rows ----------
+        // NOTE:
+        // - We treat any jp.credit > 0 as a "receipt" (this covers receipts & credit notes)
+        // - If you ONLY want cash/bank receipts (and not credit notes), you can filter
+        //   by the offsetting account(s) via jp.account_id or je.type if you track it.
+        $rows = DB::table('journal_postings as jp')
+            ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
+            ->select([
+                'jp.id as posting_id',
+                'jp.journal_entry_id',
+                DB::raw('COALESCE(jp.created_at, je.entry_date, je.created_at) AS received_at'),
+                'je.branch_id',
+                // Optional meta if your schema has these on journal_entries:
+                // 'je.method', 
+                'je.memo',
+                DB::raw('jp.credit AS amount'),
+            ])
+            ->whereIn('jp.party_type', $partyTypes)
+            ->where('jp.party_id', $customer->id)
+            ->where('jp.credit', '>', 0)
+            // ->when($branchId, fn($q) => $q->where('je.branch_id', $branchId))
+            ->orderByDesc(DB::raw('COALESCE(jp.created_at, je.entry_date, je.created_at)'))
+            ->orderByDesc('jp.id')
+            ->skip(($page - 1) * $perPage)
+            ->take($perPage)
+            ->get()
+            ->map(function ($r) {
+                return [
+                    // Present a stable "receipt-ish" identity using the posting/JE ids
+                    'id'              => (int)$r->posting_id,
+                    'journal_entry_id' => (int)$r->journal_entry_id,
+                    'received_at'     => (string)$r->received_at,
+                    'branch_id'       => (int)$r->branch_id,
+                    'amount'          => (float)$r->amount,
+                    // If you keep method/reference on journal_entries, expose them:
+                    // 'method'       => $r->method,
+                    'reference'    => $r->memo
+                ];
+            });
+
+        return ApiResponse::success([
+            'items'        => $rows,
+            'total'        => $total,
+            'per_page'     => $perPage,
+            'current_page' => $page,
+            'last_page'    => (int)ceil($total / $perPage),
+        ], 'Customer receipts fetched successfully (from journal)');
+    }
+
+    public function ledger(Request $request, \App\Models\Customer $customer)
+    {
+        $page     = max(1, (int)$request->get('page', 1));
+        $perPage  = max(1, min(100, (int)$request->get('per_page', 15)));
+        $branchId = $request->integer('branch_id');
+
+        // Optional date range
+        $from = $request->date('from'); // e.g. 2025-10-01
+        $to   = $request->date('to');   // e.g. 2025-10-31
+
+        // Support both short and FQCN party_type values
+        $partyTypes = ['customer', \App\Models\Customer::class];
+
+        // Effective date expression used for ordering and range
+        $effDateExpr = "COALESCE(jp.created_at, je.entry_date, je.created_at)";
+
+        // ---------------------------------------
+        // 1) OPENING balance (before 'from')
+        // ---------------------------------------
+        $opening = 0.0;
+
+        if ($from) {
+            $openingQ = DB::table('journal_postings as jp')
+                ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
+                ->whereIn('jp.party_type', $partyTypes)
+                ->where('jp.party_id', $customer->id);
+
+            if ($branchId) $openingQ->where('je.branch_id', $branchId);
+
+            // sum up strictly before 'from'
+            $openingQ->whereRaw("$effDateExpr < ?", [$from->format('Y-m-d 00:00:00')]);
+
+            $opening = (float) $openingQ
+                ->selectRaw('COALESCE(SUM(jp.debit - jp.credit), 0) as bal')
+                ->value('bal');
+        }
+
+        // ---------------------------------------
+        // 2) Base (filtered) dataset for this ledger view
+        // ---------------------------------------
+        $baseQ = DB::table('journal_postings as jp')
+            ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
+            ->leftJoin('accounts as a', 'a.id', '=', 'jp.account_id') // optional account name
+            ->whereIn('jp.party_type', $partyTypes)
+            ->where('jp.party_id', $customer->id);
+
+        if ($branchId) $baseQ->where('je.branch_id', $branchId);
+        if ($from)    $baseQ->whereRaw("$effDateExpr >= ?", [$from->format('Y-m-d 00:00:00')]);
+        if ($to)      $baseQ->whereRaw("$effDateExpr <= ?", [$to->format('Y-m-d 23:59:59')]);
+
+        // Count total rows in filtered set
+        $total = (clone $baseQ)->count();
+
+        // Pull the page rows (ordered asc to compute running balance naturally)
+        $pageRows = (clone $baseQ)
+            ->selectRaw("
+            jp.id as posting_id,
+            jp.journal_entry_id,
+            $effDateExpr as eff_date,
+            je.branch_id,
+            je.memo,
+            a.name as account_name,
+            COALESCE(jp.debit, 0)  as debit,
+            COALESCE(jp.credit, 0) as credit
+        ")
+            // ->orderByRaw("$effDateExpr ASC")
+            ->orderBy('jp.id', 'ASC')
+            ->skip(($page - 1) * $perPage)
+            ->take($perPage)
+            ->get();
+
+        // ---------------------------------------
+        // 3) priorDelta: net movement of all rows (inside filter)
+        //    that come BEFORE the first row of this page
+        //    so we can start the running balance correctly
+        // ---------------------------------------
+        $openingForPage = $opening;
+        if ($page > 1 && $pageRows->isNotEmpty()) {
+            $first = $pageRows->first();
+            $firstDate = (string)$first->eff_date;
+            $firstId   = (int)$first->posting_id;
+
+            $priorQ = DB::table('journal_postings as jp')
+                ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
+                ->whereIn('jp.party_type', $partyTypes)
+                ->where('jp.party_id', $customer->id);
+
+            if ($branchId) $priorQ->where('je.branch_id', $branchId);
+            if ($from)     $priorQ->whereRaw("$effDateExpr >= ?", [$from->format('Y-m-d 00:00:00')]);
+            if ($to)       $priorQ->whereRaw("$effDateExpr <= ?", [$to->format('Y-m-d 23:59:59')]);
+
+            // strictly before the first row on this page:
+            $priorQ->where(function ($q) use ($effDateExpr, $firstDate, $firstId) {
+                $q->whereRaw("$effDateExpr < ?", [$firstDate])
+                    ->orWhere(function ($q2) use ($effDateExpr, $firstDate, $firstId) {
+                        $q2->whereRaw("$effDateExpr = ?", [$firstDate])
+                            ->where('jp.id', '<', $firstId);
+                    });
+            });
+
+            $priorDelta = (float) $priorQ
+                ->selectRaw('COALESCE(SUM(jp.debit - jp.credit), 0) as bal')
+                ->value('bal');
+
+            $openingForPage += $priorDelta;
+        }
+
+        // ---------------------------------------
+        // 4) Build items with running balance (page-scoped)
+        // ---------------------------------------
+        $running = $openingForPage;
+
+        $items = $pageRows->map(function ($r) use (&$running) {
+            $debit  = (float)$r->debit;
+            $credit = (float)$r->credit;
+            $running += ($debit - $credit);
+
+            return [
+                'posting_id'       => (int)$r->posting_id,
+                'journal_entry_id' => (int)$r->journal_entry_id,
+                'date'             => (string)$r->eff_date,
+                'branch_id'        => (int)$r->branch_id,
+                'account_name'     => $r->account_name,   // may be null if no accounts join
+                'memo'             => $r->memo,
+                'debit'            => $debit,
+                'credit'           => $credit,
+                'balance'          => round($running, 2),
+            ];
+        });
+
+        return ApiResponse::success([
+            'opening'           => round($opening, 2),          // opening before 'from'
+            'opening_for_page'  => round($openingForPage, 2),   // balance at top of this page
+            'items'             => $items,
+            'total'             => $total,
+            'per_page'          => $perPage,
+            'current_page'      => $page,
+            'last_page'         => (int)ceil($total / $perPage),
+        ], 'Customer ledger fetched successfully');
     }
 }

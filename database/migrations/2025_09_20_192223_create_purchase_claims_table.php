@@ -15,8 +15,8 @@ return new class extends Migration
             $table->id();
             $table->string('claim_no')->unique(); // PCL-YYYYMM-####
             $table->unsignedBigInteger('purchase_id');
-            $table->unsignedBigInteger('vendor_id');
-            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('vendor_id')->nullable();
+            $table->unsignedBigInteger('branch_id')->nullable();
 
             // Why claim?
             $table->enum('type', ['shortage','damaged','wrong_item','expired','other'])->default('other');

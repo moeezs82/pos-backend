@@ -14,7 +14,7 @@ return new class extends Migration
         Schema::create('stock_movements', function (Blueprint $table) {
             $table->id();
             $table->unsignedBigInteger('product_id');
-            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('branch_id')->nullable();
             $table->enum('type', ['purchase', 'sale', 'return', 'adjustment', 'transfer_in', 'transfer_out', 'purchase_claim', 'purchase_return']);
             $table->integer('quantity'); // positive for in, negative for out
             $table->string('reference')->nullable(); // e.g., Sale ID, Purchase Order ID

@@ -9,7 +9,7 @@ class InventoryValuationWriteService
     /**
      * Receives purchase into product_stocks and updates avg_cost (moving average).
      */
-    public function receivePurchase(int $productId, int $branchId, int $receiveQty, float $unitPrice, ?string $ref = null): void
+    public function receivePurchase(int $productId, ?int $branchId, int $receiveQty, float $unitPrice, ?string $ref = null): void
     {
         if ($receiveQty <= 0) return;
 

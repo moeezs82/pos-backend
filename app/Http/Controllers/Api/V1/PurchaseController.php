@@ -119,7 +119,7 @@ class PurchaseController extends Controller
     {
         $data = $request->validate([
             'vendor_id' => 'required|exists:vendors,id',
-            'branch_id' => 'required|exists:branches,id',
+            'branch_id' => 'nullable|exists:branches,id',
             'invoice_date' => 'nullable|date',
             'items' => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
@@ -201,24 +201,26 @@ class PurchaseController extends Controller
             // OPTIONAL: process immediate vendor payment (if provided)
             $payment = $data['payment'] ?? null;
             $vp = null;
-            if ($payment && (float)$payment['amount'] > 0) {
+            if ($payment) {
                 // If allocations not provided, auto-allocate the payment to this purchase
-                $allocations = $payment['allocations'] ?? null;
-                if (empty($allocations)) {
-                    $allocations = [
-                        ['purchase_id' => $p->id, 'amount' => min((float)$payment['amount'], (float)$p->total)]
-                    ];
-                }
+                // $allocations = $payment['allocations'] ?? null;
+                // if (empty($allocations)) {
+                //     $allocations = [
+                //         ['purchase_id' => $p->id, 'amount' => min((float)$payment['amount'], (float)$p->total)]
+                //     ];
+                // }
 
                 $vpData = [
                     'vendor_id'   => $p->vendor_id,
                     'branch_id'   => $p->branch_id,
+                    'purchase_id' => $p->id,
                     'paid_at'     => $payment['paid_at'] ?? now()->toDateString(),
                     'method'      => $payment['method'],
                     'amount'      => $payment['amount'],
-                    'reference'   => $payment['reference'] ?? null,
+                    'memo'   => $payment['reference'] ?? "Purchase time payment for $p->invoice_no",
+                    'reference'   => $payment['reference'] ?? "Purchase time payment for $p->invoice_no",
                     'note'        => $payment['note'] ?? null,
-                    'allocations' => $allocations,
+                    // 'allocations' => $allocations,
                 ];
 
                 // Use the reusable service
@@ -228,7 +230,6 @@ class PurchaseController extends Controller
             // return both purchase and optional payment for UI
             return ApiResponse::success([
                 'purchase' => $p->load('items'),
-                'vendor_payment' => $vp ? $vp->load('allocations') : null,
             ], 'Purchase created');
         });
     }
@@ -292,19 +293,26 @@ class PurchaseController extends Controller
 
     /* ===================== Payments: Add / Update / Delete ===================== */
 
-    public function addPayment(Request $request, Purchase $purchase)
+    public function addPayment(Request $request, Purchase $purchase, VendorPaymentService $vendorPaymentService)
     {
         $data = $request->validate([
             'method' => 'nullable|string',
             'amount' => 'required|numeric|min:0.01',
-            'tx_ref' => 'nullable|string',
-            'paid_at' => 'nullable|date',
-            'meta'   => 'nullable|array',
+            // 'tx_ref' => 'nullable|string',
+            // 'paid_at' => 'nullable|date',
+            // 'meta'   => 'nullable|array',
         ]);
-        $data['paid_at'] = $data['paid_at'] ?? now();
+        $data['vendor_id'] = $purchase->vendor_id;
+        $data['branch_id'] = $purchase->branch_id;
+        $data['reference'] = "Payment for purchase $purchase->invoice_no";
+        $data['memo'] = "Payment for purchase $purchase->invoice_no";
+        $data['allocations'][] = [
+            'purchase_id' => $purchase->id,
+            'amount' => $data['amount']
+        ];
 
-        return DB::transaction(function () use ($purchase, $data) {
-            $purchase->payments()->create($data);
+        return DB::transaction(function () use ($purchase, $data, $vendorPaymentService) {
+            $vp = $vendorPaymentService->create($data);
             $this->recalculatePurchase($purchase->fresh());
 
             return ApiResponse::success(['purchase' => $purchase], 'Payment added');
@@ -335,6 +343,7 @@ class PurchaseController extends Controller
     {
         return DB::transaction(function () use ($purchase, $paymentId) {
             $payment = $purchase->payments()->findOrFail($paymentId);
+            dd($payment->payment, $payment);
             $payment->delete();
 
             $this->recalculatePurchase($purchase->fresh());

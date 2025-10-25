@@ -30,9 +30,13 @@ class Sale extends Model
         return $this->hasMany(SaleItem::class);
     }
 
+    // public function payments()
+    // {
+    //     return $this->hasMany(Payment::class);
+    // }
     public function payments()
     {
-        return $this->hasMany(Payment::class);
+        return $this->hasMany(Receipt::class);
     }
 
     public function customer()

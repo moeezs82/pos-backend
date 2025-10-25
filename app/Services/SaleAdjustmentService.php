@@ -90,7 +90,7 @@ class SaleAdjustmentService
             'debit'  => $amount > 0 ? abs($amount) : 0,
             'credit' => $amount < 0 ? abs($amount) : 0,
             'party_type' => $partyType,
-            'partyId' => $partyId
+            'party_id' => $partyId
         ];
     }
 }

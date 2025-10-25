@@ -7,12 +7,19 @@ return new class extends Migration
 {
     public function up(): void
     {
-        // Resolve literals BEFORE composing the SQL
-        // $arId = (int) env('AR_ACCOUNT_ID', 1200); // set in .env or swap to config(...)
-        $customerType = "App\Models\Customer"; // e.g. "App\Models\Customer"
-        // dd($customerType);
-
         DB::statement('DROP VIEW IF EXISTS customers_ar_view');
+
+        // If you store aliases like 'customer', keep it in the IN() below.
+        // If you store FQCNs, escape backslashes for SQL:
+        $customerFqcn      = \App\Models\Customer::class;               // App\Models\Customer
+        $customerTypeSql   = str_replace('\\', '\\\\', $customerFqcn);  // App\\Models\\Customer (for SQL literal)
+
+        // OPTIONAL: filter only AR control accounts. If you have an accounts table flag, use it.
+        // Example with explicit IDs:
+        // $arIdsSql = '1200,1201'; // comma-separated list
+        // and then add: AND jp.account_id IN ('.$arIdsSql.')
+        //
+        // Or if you have accounts.is_ar = 1, join accounts a ... AND a.is_ar = 1
 
         $sql = <<<SQL
 CREATE VIEW customers_ar_view AS
@@ -34,7 +41,7 @@ LEFT JOIN (
     SUM(jp.debit - jp.credit)                              AS balance,
     MAX(jp.created_at)                                   AS last_activity_at
   FROM journal_postings jp
-  WHERE jp.party_type = '{$customerType}'
+  WHERE jp.party_type IN ('customer', '{$customerTypeSql}')
   GROUP BY jp.party_id
 ) ar ON ar.customer_id = c.id
 SQL;

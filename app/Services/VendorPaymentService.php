@@ -38,16 +38,17 @@ class VendorPaymentService
     public function create(array $data, $isPostAccount = true): VendorPayment
     {
         $v = Validator::make($data, [
-            'vendor_id' => 'required|exists:vendors,id',
-            'branch_id' => 'required|exists:branches,id',
+            'vendor_id' => 'nullable|exists:vendors,id',
+            'branch_id' => 'nullable|exists:branches,id',
             'paid_at'   => 'nullable|date',
             'method'    => 'required|string|in:cash,bank,card,wallet',
             'amount'    => 'required|numeric|min:0.01',
+            'memo' => 'nullable|string',
             'reference' => 'nullable|string',
             'note'      => 'nullable|string',
-            'allocations' => 'array',
-            'allocations.*.purchase_id' => 'required_with:allocations|exists:purchases,id',
-            'allocations.*.amount'      => 'required_with:allocations|numeric|min:0.01',
+            // 'allocations'                 => 'nullable|array|min:1',
+            // 'allocations.*.purchase_id'   => 'required|integer|exists:purchases,id',
+            // 'allocations.*.amount'        => 'required|numeric|min:0.01',
         ]);
 
         if ($v->fails()) {
@@ -57,6 +58,7 @@ class VendorPaymentService
         // create vendor payment
         $vp = VendorPayment::create([
             'vendor_id'  => $data['vendor_id'],
+            'purchase_id'  => $data['purchase_id'] ?? null,
             'branch_id'  => $data['branch_id'],
             'paid_at'    => $data['paid_at'] ?? now()->toDateString(),
             'method'     => $data['method'],
@@ -72,7 +74,7 @@ class VendorPaymentService
         if ($isPostAccount) {
             $this->accounting->post(
                 branchId: $vp->branch_id,
-                memo: "Vendor payment #{$vp->id}",
+                memo: $data['memo'] ?? "Vendor payment #{$vp->id}",
                 reference: $vp,
                 lines: [
                     ['account_code' => '2000',               'debit' => $vp->amount, 'credit' => 0, 'party_type' => Vendor::class, 'party_id' => $vp->vendor_id], // reduce AP
@@ -85,13 +87,13 @@ class VendorPaymentService
 
         // Save allocations (if provided). Caller may pass allocations or we can create allocations
         // for a single purchase (e.g. the purchase we just created) outside of this method.
-        foreach (($data['allocations'] ?? []) as $al) {
-            VendorPaymentAllocation::create([
-                'vendor_payment_id' => $vp->id,
-                'purchase_id'       => $al['purchase_id'],
-                'amount'            => round($al['amount'], 2),
-            ]);
-        }
+        // foreach (($data['allocations'] ?? []) as $al) {
+        //     VendorPaymentAllocation::create([
+        //         'vendor_payment_id' => $vp->id,
+        //         'purchase_id'       => $al['purchase_id'],
+        //         'amount'            => round($al['amount'], 2),
+        //     ]);
+        // }
 
         return $vp;
     }

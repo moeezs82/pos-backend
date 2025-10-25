@@ -76,7 +76,7 @@ class SaleController extends Controller
             'vendor_id'   => 'nullable|exists:vendors,id',
             'salesman_id' => 'nullable|exists:users,id',
             'created_by'  => 'nullable|exists:users,id',
-            'branch_id'   => 'required|exists:branches,id',
+            'branch_id'   => 'nullable|exists:branches,id',
             'items'       => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
             'items.*.quantity'   => 'required|integer|min:1',
@@ -86,7 +86,7 @@ class SaleController extends Controller
             'payments'    => 'array', // optional receipts info
         ]);
 
-        $branchId = $data['branch_id'];
+        $branchId = $data['branch_id']??null;
 
         return DB::transaction(function () use ($data, $branchId) {
             // totals
@@ -167,22 +167,24 @@ class SaleController extends Controller
             $createdReceipts = [];
             foreach (($data['payments'] ?? []) as $payment) {
                 // auto-allocate to this sale if allocations missing
-                $allocations = $payment['allocations'] ?? null;
-                if (empty($allocations)) {
-                    $allocations = [
-                        ['sale_id' => $sale->id, 'amount' => min((float)$payment['amount'], (float)$sale->total)]
-                    ];
-                }
+                // $allocations = $payment['allocations'] ?? null;
+                // if (empty($allocations)) {
+                //     $allocations = [
+                //         ['sale_id' => $sale->id, 'amount' => min((float)$payment['amount'], (float)$sale->total)]
+                //     ];
+                // }
 
                 $receiptPayload = [
                     'customer_id' => $sale->customer_id,
                     'branch_id'   => $sale->branch_id,
+                    'sale_id' => $sale->id,
                     'received_at' => $payment['paid_at'] ?? now()->toDateString(),
                     'method'      => $payment['method'] ?? 'cash',
                     'amount'      => (float)$payment['amount'],
-                    'reference'   => $payment['reference'] ?? null,
+                    'reference'   => $payment['reference'] ?? "Payment for Sale #{$sale->invoice_no}",
+                    'memo'   => "Payment for Sale #{$sale->invoice_no}",
                     'note'        => $payment['note'] ?? null,
-                    'allocations' => $allocations,
+                    // 'allocations' => $allocations,
                 ];
 
                 $createdReceipts[] = app(\App\Services\CustomerPaymentService::class)->create($receiptPayload);

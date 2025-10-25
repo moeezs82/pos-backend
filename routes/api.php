@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\V1\RoleController;
 use App\Http\Controllers\Api\V1\SaleController;
 use App\Http\Controllers\Api\V1\SaleItemController;
 use App\Http\Controllers\Api\V1\SaleReturnController;
+use App\Http\Controllers\Api\V1\SalesReportController;
 use App\Http\Controllers\Api\V1\StockController;
 use App\Http\Controllers\Api\V1\UserController;
 use App\Http\Controllers\Api\V1\VendorController;
@@ -28,7 +29,7 @@ Route::get('/user', function (Request $request) {
     return $request->user();
 })->middleware('auth:sanctum');
 
-Route::get('/test', function() {
+Route::get('/test', function () {
     return Vendor::class;
 });
 
@@ -124,6 +125,9 @@ Route::prefix('v1')->group(function () {
             Route::get('/{customer}', [CustomerController::class, 'show'])->middleware('permission:view-customers');
             Route::put('/{customer}', [CustomerController::class, 'update'])->middleware('permission:view-customers');
             Route::delete('/{customer}', [CustomerController::class, 'destroy'])->middleware('permission:view-customers');
+            Route::get('/{customer}/sales', [CustomerController::class, 'sales'])->middleware('permission:view-customers');
+            Route::get('/{customer}/receipts', [CustomerController::class, 'receipts'])->middleware('permission:view-customers');
+            Route::get('/{customer}/ledger', [CustomerController::class, 'ledger'])->middleware('permission:view-customers');
         });
         Route::prefix('vendors')->group(function () {
             Route::get('/', [VendorController::class, 'index'])->middleware('permission:view-vendors');
@@ -131,6 +135,9 @@ Route::prefix('v1')->group(function () {
             Route::get('/{vendor}', [VendorController::class, 'show'])->middleware('permission:view-vendors');
             Route::put('/{vendor}', [VendorController::class, 'update'])->middleware('permission:manage-vendors');
             Route::delete('/{vendor}', [VendorController::class, 'destroy'])->middleware('permission:manage-vendors');
+            Route::get('/{vendor}/purchases', [VendorController::class, 'purchases'])->middleware('permission:view-vendors');
+            Route::get('/{vendor}/payments', [VendorController::class, 'payments'])->middleware('permission:view-vendors');
+            Route::get('/{vendor}/ledger', [VendorController::class, 'ledger'])->middleware('permission:view-vendors');
         });
 
         Route::prefix('accounts')->middleware('permission:manage-accounts')->group(function () {
@@ -161,13 +168,13 @@ Route::prefix('v1')->group(function () {
             Route::put('/{id}', [SaleController::class, 'update'])->middleware('permission:manage-sales');
             Route::prefix('{sale}')->middleware('permission:manage-sales')->group(function () {
                 Route::post('payments', [PaymentController::class, 'store']);
-                Route::put('payments/{payment}', [PaymentController::class, 'update']);
+                // Route::put('payments/{payment}', [PaymentController::class, 'update']);
                 Route::delete('payments/{payment}', [PaymentController::class, 'destroy']);
 
                 // Items
                 Route::post('items', [SaleItemController::class, 'store']);               // ADD item
-                Route::put('items/{item}', [SaleItemController::class, 'update']);        // EDIT item
-                Route::delete('items/{item}', [SaleItemController::class, 'destroy']);    // DELETE item
+                // Route::put('items/{item}', [SaleItemController::class, 'update']);        // EDIT item
+                // Route::delete('items/{item}', [SaleItemController::class, 'destroy']);    // DELETE item
             });
         });
 
@@ -180,13 +187,13 @@ Route::prefix('v1')->group(function () {
             // Receiving & payments
             Route::post('/{purchase}/receive',     [PurchaseController::class, 'receive'])->middleware('permission:manage-purchases');
             Route::post('/{purchase}/payments',    [PurchaseController::class, 'addPayment'])->middleware('permission:manage-purchases');
-            Route::put('/{purchase}/payments/{payment}', [PurchaseController::class, 'updatePayment'])->middleware('permission:manage-purchases');
+            // Route::put('/{purchase}/payments/{payment}', [PurchaseController::class, 'updatePayment'])->middleware('permission:manage-purchases');
             Route::delete('/{purchase}/payments/{payment}', [PurchaseController::class, 'deletePayment'])->middleware('permission:manage-purchases');
 
             // Items (line management)
             Route::post('/{purchase}/items',       [PurchaseController::class, 'addItem'])->middleware('permission:manage-purchases');
-            Route::put('/{purchase}/items/{item}', [PurchaseController::class, 'updateItem'])->middleware('permission:manage-purchases');
-            Route::delete('/{purchase}/items/{item}', [PurchaseController::class, 'deleteItem'])->middleware('permission:manage-purchases');
+            // Route::put('/{purchase}/items/{item}', [PurchaseController::class, 'updateItem'])->middleware('permission:manage-purchases');
+            // Route::delete('/{purchase}/items/{item}', [PurchaseController::class, 'deleteItem'])->middleware('permission:manage-purchases');
 
             Route::post('/{purchase}/cancel',      [PurchaseController::class, 'cancel'])->middleware('permission:manage-purchases');
         });
@@ -213,6 +220,11 @@ Route::prefix('v1')->group(function () {
             // Route::get('/daily-summary', [CashBookController::class, 'dailySummary']);
             // Route::post('/expense', [CashBookController::class, 'storeExpense'])->middleware('permission:manage-cashbook');
             // Route::get('/day-details', [CashbookController::class, 'dailyDetails']);
+        });
+
+        Route::prefix('reports/sales')->group(function () {
+            Route::get('daily-summary', [SalesReportController::class, 'dailySummary']);
+            Route::get('top-bottom',    [SalesReportController::class, 'topBottom']);
         });
     });
 });

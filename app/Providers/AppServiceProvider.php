@@ -25,9 +25,6 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        Payment::observe(PaymentObserver::class);
-        PurchasePayment::observe(PurchasePaymentObserver::class);
-        SaleReturnRefund::observe(\App\Observers\SaleReturnRefundObserver::class);
-        PurchaseClaimReceipt::observe(\App\Observers\PurchaseClaimReceiptObserver::class);
+        
     }
 }

@@ -10,7 +10,7 @@ use Illuminate\Support\Str;
 
 class AccountingService
 {
-    public function post(int $branchId, string $memo, $reference = null, array $lines, ?string $entryDate = null, ?int $userId = null): JournalEntry
+    public function post(?int $branchId, string $memo, $reference = null, array $lines, ?string $entryDate = null, ?int $userId = null): JournalEntry
     {
         // $lines = [['account_code'=>'1200','debit'=>100,'credit'=>0], ...]
         $sumDebit  = collect($lines)->sum('debit');

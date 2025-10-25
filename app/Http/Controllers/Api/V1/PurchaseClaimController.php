@@ -251,7 +251,7 @@ class PurchaseClaimController extends Controller
      * @param string $reference
      * @return void
      */
-    protected function ensureStockRowAndDecrement(int $productId, int $branchId, int $qtyToDecrement, string $reference): void
+    protected function ensureStockRowAndDecrement(int $productId, ?int $branchId, int $qtyToDecrement, string $reference): void
     {
         // Ensure exists (one quick exists check + insert if missing)
         $exists = DB::table('product_stocks')
