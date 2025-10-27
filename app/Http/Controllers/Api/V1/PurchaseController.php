@@ -304,12 +304,13 @@ class PurchaseController extends Controller
         ]);
         $data['vendor_id'] = $purchase->vendor_id;
         $data['branch_id'] = $purchase->branch_id;
+        $data['purchase_id'] = $purchase->id;
         $data['reference'] = "Payment for purchase $purchase->invoice_no";
         $data['memo'] = "Payment for purchase $purchase->invoice_no";
-        $data['allocations'][] = [
-            'purchase_id' => $purchase->id,
-            'amount' => $data['amount']
-        ];
+        // $data['allocations'][] = [
+        //     'purchase_id' => $purchase->id,
+        //     'amount' => $data['amount']
+        // ];
 
         return DB::transaction(function () use ($purchase, $data, $vendorPaymentService) {
             $vp = $vendorPaymentService->create($data);

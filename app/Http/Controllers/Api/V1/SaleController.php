@@ -61,10 +61,75 @@ class SaleController extends Controller
         return ApiResponse::success($sales);
     }
 
-    // Get single sale with details
-    public function show($id)
+    public function show(Request $request, $id)
     {
-        $sale = Sale::with(['customer:id,first_name,last_name', 'branch', 'items.product:id,name', 'payments', 'vendor:id,first_name,last_name', 'salesman:id,name'])->findOrFail($id);
+        $includeBalance = $request->boolean('include_balance'); // ?include_balance=1
+        $branchId       = $request->integer('branch_id');       // optional branch scope
+
+        $sale = Sale::with([
+            'customer:id,first_name,last_name',
+            'branch',
+            'items.product:id,name',
+            'payments',
+            'vendor:id,first_name,last_name',
+            'salesman:id,name',
+        ])->findOrFail($id);
+
+        $asOf = $sale->created_at;             // optional ISO date/time, e.g. 2025-10-26 or 2025-10-26 23:59:59
+
+        // If there is no customer or balance not requested, return as is
+        if (!$includeBalance || !$sale->customer_id) {
+            return ApiResponse::success($sale);
+        }
+
+        // ---- Compute AR snapshot for this customer (matches your index() approach) ----
+        $customerId = (int)$sale->customer_id;
+        $customerFqcn = \App\Models\Customer::class;
+        $partyTypes   = ['customer', $customerFqcn];
+
+        $jp = DB::table('journal_postings as jp')
+            ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
+            ->selectRaw("
+            SUM(CASE WHEN jp.debit  > 0 THEN jp.debit  ELSE 0 END) AS tot_sales,
+            SUM(CASE WHEN jp.credit > 0 THEN jp.credit ELSE 0 END) AS tot_receipts,
+            SUM(jp.debit - jp.credit)                              AS balance,
+            MAX(COALESCE(jp.created_at, je.created_at))            AS last_activity_at
+        ")
+            ->whereIn('jp.party_type', $partyTypes)
+            ->where('jp.party_id', $customerId);
+
+        // Optional branch scope (on journal_entries)
+        if ($branchId > 0) {
+            $jp->where('je.branch_id', $branchId);
+        }
+
+        // Optional "as of" cutoff (<= as_of)
+        if (!empty($asOf)) {
+            // Use je.created_at as the canonical posting timestamp (adjust if you use a different column)
+            $jp->where('je.created_at', '<', $asOf);
+        }
+
+        // Optional: restrict to AR accounts only if you keep non-AR traffic in journal_postings
+        // $jp->whereIn('jp.account_id', [1200,1201]);
+
+        $row = $jp->first();
+
+        $ar = [
+            'total_sales'      => (float)($row->tot_sales ?? 0),
+            'total_receipts'   => (float)($row->tot_receipts ?? 0),
+            'balance'          => (float)($row->balance ?? 0),
+            'last_activity_at' => isset($row->last_activity_at) ? (string)$row->last_activity_at : null,
+            'branch_id'        => $branchId > 0 ? (int)$branchId : null,
+            'as_of'            => $asOf ?: null,
+        ];
+
+        // Attach under customer to keep the payload tidy (or put as $sale->customer_balance if you prefer)
+        if ($sale->relationLoaded('customer') && $sale->customer) {
+            $sale->customer->setAttribute('ar_summary', $ar);
+        } else {
+            // Fallback if customer relation not loaded for some reason
+            $sale->setAttribute('customer_ar_summary', $ar);
+        }
 
         return ApiResponse::success($sale);
     }
@@ -86,7 +151,7 @@ class SaleController extends Controller
             'payments'    => 'array', // optional receipts info
         ]);
 
-        $branchId = $data['branch_id']??null;
+        $branchId = $data['branch_id'] ?? null;
 
         return DB::transaction(function () use ($data, $branchId) {
             // totals
@@ -129,7 +194,7 @@ class SaleController extends Controller
                 ->where('ps.branch_id', $sale->branch_id)
                 ->whereIn('ps.product_id', $productIds)
                 ->pluck('ps.avg_cost', 'ps.product_id'); // -> { product_id: avg_cost }
-                $totalCogs = 0;
+            $totalCogs = 0;
 
             // create items (do not duplicate stock decrement here — handled by deductStockAndStampCosts)
             foreach ($data['items'] as $item) {
@@ -137,23 +202,43 @@ class SaleController extends Controller
                 $qty       = (int)$item['quantity'];
                 $price     = (float)$item['price'];
 
-                $unitCost  = (float)($costByProduct[$productId] ?? 0.0);
-                $lineCost  = round($unitCost * $qty, 2);
+                // New: discount % (clamped between 0 and 100)
+                $discountPct = isset($item['discount_pct']) ? (float)$item['discount_pct'] : 0.0;
+                $discountPct = max(0.0, min(100.0, $discountPct));
+
+                // Line math (round at money boundaries)
+                $lineSubtotal = round($qty * $price, 2);
+                $lineDiscount = round($lineSubtotal * ($discountPct / 100.0), 2);
+                $lineTotal    = round($lineSubtotal - $lineDiscount, 2);
+
+                // COGS stays the same (discount affects revenue, not cost)
+                $unitCost = (float)($costByProduct[$productId] ?? 0.0);
+                $lineCost = round($unitCost * $qty, 2);
                 $totalCogs += $lineCost;
 
                 $sale->items()->create([
                     'product_id' => $productId,
                     'quantity'   => $qty,
-                    'price'      => $price,
-                    'total'      => round($qty * $price, 2),
+                    'price'      => $price,            // unit price before discount
+                    'discount'   => $discountPct,      // store the % value you added
+                    // Optional (only if you have these columns): 
+                    // 'discount_amount' => $lineDiscount,
+                    // 'subtotal'        => $lineSubtotal,
 
-                    // new
+                    'total'      => $lineTotal,        // NET line total after % discount
+
+                    // costs
                     'unit_cost'  => $unitCost,
                     'line_cost'  => $lineCost,
                 ]);
             }
             $sale->cogs = round($totalCogs, 2);
-            $sale->gross_profit = round($sale->total - $sale->cogs, 2);
+
+            // Ensure $sale->total (revenue) is computed from discounted line totals elsewhere.
+            // If you need to do it here, uncomment the next line:
+            // $sale->total = $sale->items()->sum('total');
+
+            $sale->gross_profit = round(($sale->total ?? 0) - $sale->cogs, 2);
             $sale->save();
 
             // Deduct stock, stamp costs (sets unit_cost & line_cost on items) and update sale.cogs/gross_profit

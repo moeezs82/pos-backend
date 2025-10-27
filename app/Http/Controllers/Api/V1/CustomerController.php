@@ -140,7 +140,6 @@ class CustomerController extends Controller
         ], 'Customers fetched successfully');
     }
 
-
     public function store(CustomerRequest $request)
     {
         $data = $request->validated();
