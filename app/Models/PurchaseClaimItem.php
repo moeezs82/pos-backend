@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class PurchaseClaimItem extends Model
 {
     protected $fillable = [
-        'purchase_claim_id','purchase_item_id','product_id',
+        'purchase_claim_id','purchase_item_id','product_id', 'discount',
         'quantity','price','total','affects_stock','batch_no','expiry_date','remarks'
     ];
 

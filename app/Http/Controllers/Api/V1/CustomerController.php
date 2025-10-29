@@ -7,9 +7,11 @@ use App\Http\Requests\CustomerRequest;
 use App\Http\Resources\CustomerResource;
 use App\Http\Response\ApiResponse;
 use App\Models\Customer;
+use App\Services\CustomerPaymentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\Rule;
 
 class CustomerController extends Controller
 {
@@ -449,5 +451,33 @@ class CustomerController extends Controller
             'current_page'      => $page,
             'last_page'         => (int)ceil($total / $perPage),
         ], 'Customer ledger fetched successfully');
+    }
+
+    public function storeReceipt(Request $request, Customer $customer, CustomerPaymentService $cps)
+    {
+        $data = $request->validate([
+            'amount'      => 'required|numeric|min:1',
+            'method'      => ['required', Rule::in(['cash', 'card', 'bank', 'wallet'])],
+            'reference'   => 'nullable|string',
+            'branch_id' => 'nullable|integer',
+            'received_by' => 'nullable|integer',
+            'received_on' => 'nullable|date'
+        ]);
+        $reference = $data['reference'] ?? "Payment received by " . auth()->user()->name;
+        $data['customer_id'] = $customer->id;
+        $data['branch_id'] = $request->branch_id;
+        $data['reference'] = $reference;
+        $data['memo'] = $reference;
+
+        return DB::transaction(function () use ($data, $cps) {
+            // $payment = $sale->payments()->create($data);
+            $payment = $cps->create($data);
+
+
+            return ApiResponse::success(
+                ['payment' => $payment],
+                'Payment added successfully'
+            );
+        });
     }
 }

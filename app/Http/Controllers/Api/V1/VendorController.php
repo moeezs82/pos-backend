@@ -7,6 +7,7 @@ use App\Http\Requests\VendorRequest;
 use App\Http\Resources\VendorResource;
 use App\Http\Response\ApiResponse;
 use App\Models\Vendor;
+use App\Services\VendorPaymentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -436,5 +437,39 @@ class VendorController extends Controller
             'current_page'      => $page,
             'last_page'         => (int)ceil($total / $perPage),
         ], 'Vendor ledger fetched successfully');
+    }
+
+    public function storePayment(Request $request, Vendor $vendor, VendorPaymentService $vendorPaymentService)
+    {
+        $data = $request->validate([
+            'branch_id'  => 'nullable|exists:branches,id',
+            'paid_at'    => 'nullable|date',
+            'method'     => 'required|string|in:cash,bank,card,wallet',
+            'amount'     => 'required|numeric|min:0.01',
+            'reference'  => 'nullable|string',
+            'note'       => 'nullable|string',
+            // Optional UI allocations; purely informational
+            'allocations' => 'array',
+            'allocations.*.purchase_id' => 'required_with:allocations|exists:purchases,id',
+            'allocations.*.amount'      => 'required_with:allocations|numeric|min:0.01',
+        ]);
+
+        return DB::transaction(function () use ($data, $vendorPaymentService, $vendor) {
+            
+            $vpData = [
+                'vendor_id'  => $vendor->id,
+                'branch_id'  => $data['branch_id'] ?? null,
+                'paid_at'    => $data['paid_at'] ?? now()->toDateString(),
+                'method'     => $data['method'],
+                'amount'     => round($data['amount'], 2),
+                'reference'  => $data['reference'] ?? "Payment Send by ".auth()->user()->name,
+                'memo'  => $data['reference'] ?? "Payment Send by ".auth()->user()->name,
+                'note'       => $data['note'] ?? null,
+                'created_by' => auth()->id(),
+            ];
+            $vp = $vendorPaymentService->create($vpData);
+
+            return response()->json($vp, 201);
+        });
     }
 }

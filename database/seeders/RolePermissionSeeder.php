@@ -49,6 +49,8 @@ class RolePermissionSeeder extends Seeder
             'manage-accounts',
             'view-roles',
             'manage-roles',
+            'manage-receipts',
+            'manage-payments',
         ];
 
         foreach ($permissions as $perm) {

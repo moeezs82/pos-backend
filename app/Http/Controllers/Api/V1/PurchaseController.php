@@ -125,6 +125,7 @@ class PurchaseController extends Controller
             'items.*.product_id' => 'required|exists:products,id',
             'items.*.quantity'   => 'required|integer|min:1',
             'items.*.price'      => 'required|numeric|min:0',
+            'items.*.discount' => 'nullable|numeric',
             'discount' => 'nullable|numeric|min:0',
             'tax'      => 'nullable|numeric|min:0',
             'expected_at' => 'nullable|date',
@@ -147,7 +148,18 @@ class PurchaseController extends Controller
         $receiveNow = (bool)($data['receive_now'] ?? false);
 
         return DB::transaction(function () use ($data, $receiveNow, $vendorPaymentService) {
-            $subtotal = collect($data['items'])->sum(fn($i) => $i['quantity'] * $i['price']);
+            // totals
+            $subtotal = collect($data['items'])->sum(function ($i) {
+                $qty   = (float)($i['quantity']      ?? 0);
+                $price = (float)($i['price']         ?? 0);
+                $pct   = (float)($i['discount']  ?? 0);   // 0–100
+
+                $pct   = max(0, min(100, $pct));              // clamp
+                $line  = $qty * $price;
+                $line -= $line * ($pct / 100);                // apply % off
+
+                return max(0, $line);                         // no negatives
+            });
             $total    = max(0, $subtotal - ($data['discount'] ?? 0) + ($data['tax'] ?? 0));
 
             $p = Purchase::create([
@@ -169,12 +181,22 @@ class PurchaseController extends Controller
             // create items and optionally receive immediately
             $receiveRows = [];
             foreach ($data['items'] as $row) {
+                // New: discount % (clamped between 0 and 100)
+                $discountPct = isset($row['discount']) ? (float)$row['discount'] : 0.0;
+                $discountPct = max(0.0, min(100.0, $discountPct));
+
+                // Line math (round at money boundaries)
+                $lineSubtotal = round((int)$row['quantity'] * (float)$row['price'], 2);
+                $lineDiscount = round($lineSubtotal * ($discountPct / 100.0), 2);
+                $lineTotal    = round($lineSubtotal - $lineDiscount, 2);
+
                 $item = $p->items()->create([
                     'product_id'   => $row['product_id'],
                     'quantity'     => (int)$row['quantity'],
                     'received_qty' => 0,
                     'price'        => (float)$row['price'],
-                    'total'        => (float)$row['quantity'] * (float)$row['price'],
+                    'discount'     => (float)$row['discount'],
+                    'total'        => $lineTotal,
                 ]);
 
                 $toReceive = (int) $row['quantity'];
@@ -361,9 +383,10 @@ class PurchaseController extends Controller
             'product_id' => 'required|exists:products,id',
             'quantity'   => 'required|integer|min:1',
             'price'      => 'required|numeric|min:0',
+            'discount'      => 'nullable|numeric|min:0',
         ]);
 
-        $branchId = (int) $purchase->branch_id;
+        $branchId = $purchase->branch_id;
 
         return DB::transaction(function () use ($purchase, $data, $branchId) {
             // Snapshot old totals
@@ -374,12 +397,22 @@ class PurchaseController extends Controller
                 'total'    => (float)$purchase->total,
             ];
 
+            // New: discount % (clamped between 0 and 100)
+            $discountPct = isset($data['discount']) ? (float)$data['discount'] : 0.0;
+            $discountPct = max(0.0, min(100.0, $discountPct));
+
+            // Line math (round at money boundaries)
+            $lineSubtotal = round((int)$data['quantity'] * (float)$data['price'], 2);
+            $lineDiscount = round($lineSubtotal * ($discountPct / 100.0), 2);
+            $lineTotal    = round($lineSubtotal - $lineDiscount, 2);
+
             // Create line (ordered == received now)
             $item = $purchase->items()->create([
                 'product_id' => (int)$data['product_id'],
                 'quantity'   => (int)$data['quantity'],
                 'price'      => (float)$data['price'],
-                'total'      => (float)$data['quantity'] * (float)$data['price'],
+                'discount'   => (float)$data['discount']??0.00,
+                'total'      => $lineTotal,
             ]);
 
             // Receive into stock at line price (affects avg_cost)
@@ -392,7 +425,7 @@ class PurchaseController extends Controller
             );
 
             // Recompute purchase totals
-            $subtotal = $purchase->items()->sum(DB::raw('quantity * price'));
+            $subtotal = $purchase->items()->sum('total');
             $total    = max(0, $subtotal - $purchase->discount + $purchase->tax);
             $purchase->update([
                 'subtotal' => round($subtotal, 2),

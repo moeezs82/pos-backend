@@ -99,7 +99,7 @@ class PurchaseClaimController extends Controller
             $purchaseItems = \App\Models\PurchaseItem::query()
                 ->where('purchase_id', $purchase->id)
                 ->whereIn('id', $requestedIds)
-                ->select('id', 'purchase_id', 'product_id', 'quantity', 'price')
+                ->select('id', 'purchase_id', 'product_id', 'quantity', 'price', 'discount')
                 ->get()
                 ->keyBy('id');
 
@@ -116,10 +116,12 @@ class PurchaseClaimController extends Controller
             $alreadyClaimed = DB::table('purchase_claim_items as pci')
                 ->join('purchase_claims as pc', 'pc.id', '=', 'pci.purchase_claim_id')
                 ->where('pc.purchase_id', $purchase->id)
-                // ->whereNotIn('pc.status', ['rejected','cancelled']) // uncomment if applicable
+                // ->whereNotIn('pc.status', ['rejected','cancelled']) // if needed
                 ->whereIn('pci.purchase_item_id', $requestedIds)
+                ->selectRaw('pci.purchase_item_id, SUM(pci.quantity) AS claimed_qty')
                 ->groupBy('pci.purchase_item_id')
-                ->pluck(DB::raw('SUM(pci.quantity)'), 'pci.purchase_item_id'); // map: id => claimed_qty
+                ->pluck('claimed_qty', 'purchase_item_id');
+            // dd('hello');
 
             // Single validation + preparation pass
             $violations = [];
@@ -146,12 +148,15 @@ class PurchaseClaimController extends Controller
                     : ($type !== 'shortage');
 
                 $price = (float) $pi->price; // use purchase cost
-                $line  = $req * $price;
+                $lineSubtotal  = $req * $price;
+                $lineDiscount   = round($lineSubtotal * ($pi->discount / 100.0), 2);
+                $line      = round($lineSubtotal - $lineDiscount, 2);
                 $subtotal += $line;
 
                 $prepared[] = [
                     'purchase_item_id' => $pi->id,
                     'product_id'       => $pi->product_id,
+                    'discount'       => $pi->discount,
                     'quantity'         => $req,
                     'price'            => $price,
                     'total'            => $line,
@@ -199,6 +204,7 @@ class PurchaseClaimController extends Controller
                     'purchase_item_id'  => $line['purchase_item_id'],
                     'product_id'        => $line['product_id'],
                     'quantity'          => $line['quantity'],
+                    'discount'          => $line['discount'],
                     'price'             => $line['price'],
                     'total'             => $line['total'],
                     'affects_stock'     => $line['affects_stock'],

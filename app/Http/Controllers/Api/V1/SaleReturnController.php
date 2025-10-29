@@ -354,7 +354,7 @@ class SaleReturnController extends Controller
             $saleItems = SaleItem::query()
                 ->where('sale_id', $sale->id)
                 ->whereIn('id', $requestedIds)
-                ->select('id', 'sale_id', 'product_id', 'quantity', 'price') // unit_cost not needed yet
+                ->select('id', 'sale_id', 'product_id', 'quantity', 'price', 'discount') // unit_cost not needed yet
                 ->get()->keyBy('id');
 
             if ($saleItems->count() !== $requestedIds->count()) {
@@ -366,8 +366,9 @@ class SaleReturnController extends Controller
                 ->join('sale_returns as sr', 'sr.id', '=', 'sri.sale_return_id')
                 ->where('sr.sale_id', $sale->id)
                 ->whereIn('sri.sale_item_id', $requestedIds)
+                ->selectRaw('sri.sale_item_id, SUM(sri.quantity) AS returned_qty')
                 ->groupBy('sri.sale_item_id')
-                ->pluck(DB::raw('SUM(sri.quantity)'), 'sri.sale_item_id');
+                ->pluck('returned_qty', 'sale_item_id');
 
             $violations = [];
             $prepared   = [];
@@ -386,15 +387,22 @@ class SaleReturnController extends Controller
                 }
                 if ($req <= 0) continue;
 
-                $lineTotal = round($req * (float)$si->price, 2);
+                // Treat sale_items.discount as PERCENT (0-100). Clamp for safety.
+                $discPct  = (float) ($si->discount ?? 0);
+                $discPct  = max(0.0, min(100.0, $discPct));
+                $unitNet  = (float) $si->price * (1.0 - ($discPct / 100.0));
+                if ($unitNet < 0) $unitNet = 0.0;
+
+                $lineTotal = round($req * $unitNet, 2);
                 $subtotal += $lineTotal;
 
                 $prepared[] = [
                     'sale_item_id' => $si->id,
                     'product_id'   => $si->product_id,
                     'quantity'     => $req,
-                    'price'        => (float)$si->price,
-                    'total'        => $lineTotal,
+                    'price'        => (float) $si->price, // store original TP for reference
+                    'discount'     => $discPct,           // (optional) keep discount on return line
+                    'total'        => $lineTotal,         // discounted line total
                 ];
             }
 
@@ -427,8 +435,11 @@ class SaleReturnController extends Controller
                     'sale_item_id'   => $line['sale_item_id'],
                     'product_id'     => $line['product_id'],
                     'quantity'       => $line['quantity'],
-                    'price'          => $line['price'],
-                    'total'          => $line['total'],
+                    'price'          => $line['price'],     // original TP
+                    // If your table has 'discount' column on sale_return_items, keep the next line.
+                    // If not, remove it.
+                    'discount'       => $line['discount'] ?? 0, // %
+                    'total'          => $line['total'],     // discounted
                     'created_at'     => $ts,
                     'updated_at'     => $ts,
                 ];

@@ -21,6 +21,7 @@ class SaleItemController extends Controller
             'product_id' => 'required|exists:products,id',
             'quantity'   => 'required|integer|min:1',
             'price'      => 'required|numeric|min:0',
+            'discount_pct'      => 'nullable|numeric|min:0',
         ]);
 
         $branchId = $sale->branch_id;
@@ -35,24 +36,38 @@ class SaleItemController extends Controller
             ];
             $oldCogs = (float)$sale->cogs;
 
-            // create item
-            $item = $sale->items()->create([
-                'product_id' => $data['product_id'],
-                'quantity'   => (int)$data['quantity'],
-                'price'      => (float)$data['price'],
-                'total'      => round($data['quantity'] * $data['price'], 2),
-            ]);
-
             // compute unit cost using inventory valuation (avg cost)
             $valService = app(\App\Services\InventoryValuationService::class);
-            $avgCost = (float)$valService->avgCost($item->product_id, $branchId);
+            $avgCost = (float)$valService->avgCost($data['product_id'], $branchId);
             $unitCost = round($avgCost, 4); // keep a few decimals for unit cost
-            $lineCost = round($unitCost * $item->quantity, 2);
+            $lineCost = round($unitCost * $data['quantity'], 2);
 
-            // update item with cost
-            $item->update([
-                'unit_cost' => $unitCost,
-                'line_cost' => $lineCost,
+            // create item
+            // Expecting: product_id, quantity, price, (optional) discount_pct
+            $qty   = (int) ($data['quantity'] ?? 1);
+            $price = (float) ($data['price'] ?? 0);
+            $disc  = isset($data['discount_pct']) ? (float) $data['discount_pct'] : 0.0;
+
+            // Clamp discount between 0–100 to avoid bad math
+            $disc = max(0.0, min(100.0, $disc));
+
+            $lineSubtotal   = $qty * $price;
+            $lineDiscount   = round($lineSubtotal * ($disc / 100.0), 2);
+            $lineTotal      = round($lineSubtotal - $lineDiscount, 2);
+
+            // Your existing costs (keep your own calculations for these)
+            $unitCost = $unitCost ?? 0.0;  // whatever you computed above
+            $lineCost = $lineCost ?? 0.0;  // whatever you computed above
+
+            $item = $sale->items()->create([
+                'product_id'       => $data['product_id'],
+                'quantity'         => $qty,
+                'price'            => $price,
+                'discount'     => $disc,           // <-- add this column in DB if not present
+                // 'discount_amount' => $lineDiscount,  // <-- optional if you have this column
+                'total'            => $lineTotal,      // <-- AFTER discount
+                'unit_cost'        => $unitCost,
+                'line_cost'        => $lineCost,
             ]);
 
             // adjust stock: decrement by quantity (selling more)
@@ -322,7 +337,7 @@ class SaleItemController extends Controller
     private function recalculateSale(Sale $sale): void
     {
         // recompute subtotal and total (discount & tax are assumed on sale header)
-        $subtotal = (float) $sale->items()->sum(DB::raw('quantity * price'));
+        $subtotal = (float) $sale->items()->sum('total');
         $discount = (float) ($sale->discount ?? 0);
         $tax      = (float) ($sale->tax ?? 0);
         $total    = round(max(0, $subtotal - $discount + $tax), 2);

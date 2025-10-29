@@ -12,6 +12,7 @@ class PurchaseItem extends Model
         'quantity',
         'received_qty',
         'price',
+        'discount',
         'total'
     ];
 

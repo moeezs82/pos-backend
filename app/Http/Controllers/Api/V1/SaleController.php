@@ -144,6 +144,7 @@ class SaleController extends Controller
             'branch_id'   => 'nullable|exists:branches,id',
             'items'       => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
+            'items.*.discount_pct' => 'nullable|numeric',
             'items.*.quantity'   => 'required|integer|min:1',
             'items.*.price'      => 'required|numeric|min:0',
             'discount'    => 'nullable|numeric|min:0',
@@ -155,7 +156,17 @@ class SaleController extends Controller
 
         return DB::transaction(function () use ($data, $branchId) {
             // totals
-            $subtotal = collect($data['items'])->sum(fn($i) => $i['quantity'] * $i['price']);
+            $subtotal = collect($data['items'])->sum(function ($i) {
+                $qty   = (float)($i['quantity']      ?? 0);
+                $price = (float)($i['price']         ?? 0);
+                $pct   = (float)($i['discount_pct']  ?? 0);   // 0–100
+
+                $pct   = max(0, min(100, $pct));              // clamp
+                $line  = $qty * $price;
+                $line -= $line * ($pct / 100);                // apply % off
+
+                return max(0, $line);                         // no negatives
+            });
             $discount = (float)($data['discount'] ?? 0);
             $tax      = (float)($data['tax'] ?? 0);
             $total    = max(0, round($subtotal - $discount + $tax, 2));
