@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\ProductController;
 use App\Http\Controllers\Api\V1\PurchaseClaimController;
 use App\Http\Controllers\Api\V1\PurchaseController;
+use App\Http\Controllers\Api\V1\ReportController;
 use App\Http\Controllers\Api\V1\RoleController;
 use App\Http\Controllers\Api\V1\SaleController;
 use App\Http\Controllers\Api\V1\SaleItemController;
@@ -224,9 +225,12 @@ Route::prefix('v1')->group(function () {
             // Route::get('/day-details', [CashbookController::class, 'dailyDetails']);
         });
 
-        Route::prefix('reports/sales')->group(function () {
-            Route::get('daily-summary', [SalesReportController::class, 'dailySummary']);
-            Route::get('top-bottom',    [SalesReportController::class, 'topBottom']);
+        Route::prefix('/reports')->group(function () {
+            Route::prefix('/sales')->group(function() {
+                Route::get('/daily-summary', [SalesReportController::class, 'dailySummary']);
+                Route::get('/top-bottom',    [SalesReportController::class, 'topBottom']);
+            });
+            Route::get('/ledger', [ReportController::class, 'ledger']);
         });
     });
 });

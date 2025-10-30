@@ -10,115 +10,6 @@ use Illuminate\Support\Facades\Schema;
 
 class SalesReportService
 {
-    private function range($q, ?Carbon $from, ?Carbon $to, string $col = 'je.entry_date')
-    {
-        if ($from) $q->where($col, '>=', $from->copy()->startOfDay()->toDateString());
-        if ($to)   $q->where($col, '<=', $to->copy()->endOfDay()->toDateString());
-        return $q;
-    }
-
-    private function basePostingQ()
-    {
-        return DB::table('journal_postings as jp')
-            ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id');
-    }
-
-    private function joinSaleMeta($q, ?int $registerId, ?int $cashierId, ?string $channel)
-    {
-        // Only available when JE references Sale
-        $q->leftJoin('sales as s', function ($j) {
-            $j->on('s.id', '=', 'je.reference_id')
-                ->where('je.reference_type', '=', 'App\\Models\\Sale');
-        });
-        if ($registerId) $q->where('s.register_id', $registerId);
-        if ($cashierId)  $q->where('s.cashier_id', $cashierId);
-        if ($channel)    $q->where('s.channel', $channel);
-        return $q;
-    }
-
-    private function filterAll($q, ?Carbon $from, ?Carbon $to, ?int $branchId, ?int $registerId, ?int $cashierId, ?string $channel)
-    {
-        $this->range($q, $from, $to);
-        if ($branchId) $q->where('je.branch_id', $branchId);
-        $this->joinSaleMeta($q, $registerId, $cashierId, $channel);
-        return $q;
-    }
-
-    /** Resolve account IDs by explicit codes; if empty, fallback to type/name_like */
-    private function accountIds(string $key): array
-    {
-        $codes = config("reports.accounts.$key", []);
-        if (!empty($codes)) {
-            return DB::table('accounts')->whereIn('code', $codes)->pluck('id')->all();
-        }
-
-        $fb = config("reports.fallbacks.$key");
-        if (!$fb) return [];
-        $q = DB::table('accounts as a')
-            ->join('account_types as t', 't.id', '=', 'a.account_type_id')
-            ->where('t.code', $fb['type']);
-        if (!empty($fb['name_like'])) {
-            $q->where('a.name', 'like', '%' . $fb['name_like'] . '%');
-        }
-        return $q->pluck('a.id')->all();
-    }
-
-    /** ---------------- Daily Sales Summary ---------------- */
-    public function dailySummary(
-        ?Carbon $from,
-        ?Carbon $to,
-        ?int $branchId,
-        ?int $salesmanId,
-        ?int $customerId
-    ): array {
-        // ------------ Base SALES aggregates ------------
-        $salesQ = DB::table('sales')
-            ->when($from, fn($q) => $q->where('created_at', '>=', $from->copy()->startOfDay()))
-            ->when($to,   fn($q) => $q->where('created_at', '<=', $to->copy()->endOfDay()))
-            ->when($branchId,   fn($q) => $q->where('branch_id', $branchId))
-            ->when($salesmanId, fn($q) => $q->where('salesman_id', $salesmanId))
-            ->when($customerId, fn($q) => $q->where('customer_id', $customerId));
-
-        // Sum needed columns from sales
-        $salesAgg = (clone $salesQ)->selectRaw("
-                COALESCE(SUM(subtotal), 0) AS subtotal_sum,
-                COALESCE(SUM(discount), 0) AS discount_sum,
-                COALESCE(SUM(tax), 0)      AS tax_sum,
-                COALESCE(SUM(total), 0)    AS total_sum
-            ")->first();
-
-        $gross   = (float)($salesAgg->subtotal_sum ?? 0.0);   // gross sales (before discounts & tax)
-        $disc    = (float)($salesAgg->discount_sum ?? 0.0);   // discounts given
-        $tax     = (float)($salesAgg->tax_sum ?? 0.0);        // output tax on sales
-        $total   = (float)($salesAgg->total_sum ?? 0.0);      // net after discount+tax (pre-returns)
-
-        // ------------ RETURNS aggregates ------------
-        // Join to sales so returns respect same branch/salesman/customer filters
-        $returnsQ = DB::table('sale_returns as sr')
-            ->join('sales as s', 's.id', '=', 'sr.sale_id')
-            ->when($from, fn($q) => $q->where('sr.created_at', '>=', $from->copy()->startOfDay()))
-            ->when($to,   fn($q) => $q->where('sr.created_at', '<=', $to->copy()->endOfDay()))
-            ->when($branchId,   fn($q) => $q->where('s.branch_id', $branchId))
-            ->when($salesmanId, fn($q) => $q->where('s.salesman_id', $salesmanId))
-            ->when($customerId, fn($q) => $q->where('s.customer_id', $customerId));
-
-        $returns = (float) ((clone $returnsQ)
-            ->selectRaw("COALESCE(SUM(sr.total), 0) AS returns_total")
-            ->value('returns_total') ?? 0.0);
-
-        // ------------ Final KPIs ------------
-        // Net sales after returns: (subtotal - discount + tax) - returns
-        $net = $total - $returns;
-
-        return [
-            'gross_sales' => round($gross, 2),   // from sales.subtotal
-            'discounts'   => round($disc, 2),    // from sales.discount
-            'returns'     => round($returns, 2), // from sale_returns.total (positive)
-            'tax'         => round($tax, 2),     // from sales.tax
-            'net_sales'   => round($net, 2),     // total - returns
-        ];
-    }
-
     /**
      * Day-wise Daily Sales Summary (paginated)
      * - Filters: branch_id, salesman_id, customer_id
@@ -354,8 +245,8 @@ class SalesReportService
             ->selectRaw("
             si.product_id,
             SUM(si.quantity)                                     as qty_pos,
-            SUM(si.quantity * si.price)                          as rev_pos,
-            SUM(si.quantity * {$costExprPos})                    as cogs_pos
+            SUM(si.total)                          as rev_pos,
+            SUM(si.line_cost)                    as cogs_pos
             ")
             ->groupBy('si.product_id');
 
@@ -379,7 +270,7 @@ class SalesReportService
                 ->selectRaw("
                 sri.product_id,
                 SUM(sri.quantity)                                 as qty_neg,
-                SUM(sri.quantity * sri.price)                     as rev_neg,
+                SUM(sri.total)                     as rev_neg,
                 SUM(sri.quantity * {$costExprNeg})                as cogs_neg
             ")
                 ->groupBy('sri.product_id');

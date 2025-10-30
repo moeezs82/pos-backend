@@ -7,6 +7,7 @@ use App\Http\Requests\VendorRequest;
 use App\Http\Resources\VendorResource;
 use App\Http\Response\ApiResponse;
 use App\Models\Vendor;
+use App\Services\LedgerService;
 use App\Services\VendorPaymentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -313,130 +314,19 @@ class VendorController extends Controller
         $from = $request->date('from'); // Carbon|null
         $to   = $request->date('to');   // Carbon|null
 
-        // Support both 'vendor' and FQCN in party_type
-        $partyTypes = ['vendor', \App\Models\Vendor::class];
+        $svc = new LedgerService();
 
-        // Prefer posting timestamp, then entry date
-        $effDateExpr = "COALESCE(jp.created_at, je.entry_date, je.created_at)";
+        $data = $svc->getLedger([
+            'party_type' => 'vendor',
+            'vendor_id' => $vendor->id,
+            'from' => $from,
+            'to' => $to,
+            'page' => $page,
+            'per_page' => $perPage
+        ]);
 
-        // --------------------------
-        // 1) Opening balance (before 'from')
-        //    AP convention: credit increases payable, debit decreases
-        // --------------------------
-        $opening = 0.0; // IMPORTANT: if no $from, opening must be 0
-        if ($from) {
-            $openingQ = DB::table('journal_postings as jp')
-                ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
-                ->whereIn('jp.party_type', $partyTypes)
-                ->where('jp.party_id', $vendor->id);
-
-            if ($branchId) $openingQ->where('je.branch_id', $branchId);
-
-            // strictly before start of 'from' day
-            $openingQ->whereRaw("$effDateExpr < ?", [$from->copy()->startOfDay()->toDateTimeString()]);
-
-            $opening = (float) $openingQ
-                ->selectRaw('COALESCE(SUM(jp.credit - jp.debit), 0) as bal')
-                ->value('bal');
-        }
-
-        // --------------------------
-        // 2) Base filtered dataset
-        // --------------------------
-        $baseQ = DB::table('journal_postings as jp')
-            ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
-            ->leftJoin('accounts as a', 'a.id', '=', 'jp.account_id')
-            ->whereIn('jp.party_type', $partyTypes)
-            ->where('jp.party_id', $vendor->id);
-
-        if ($branchId) $baseQ->where('je.branch_id', $branchId);
-        if ($from)     $baseQ->whereRaw("$effDateExpr >= ?", [$from->copy()->startOfDay()->toDateTimeString()]);
-        if ($to)       $baseQ->whereRaw("$effDateExpr <= ?", [$to->copy()->endOfDay()->toDateTimeString()]);
-
-        $total = (clone $baseQ)->count();
-
-        // Page rows — ASC for deterministic running balance
-        $pageRows = (clone $baseQ)
-            ->selectRaw("
-            jp.id as posting_id,
-            jp.journal_entry_id,
-            $effDateExpr as eff_date,
-            je.branch_id,
-            je.memo,
-            a.name as account_name,
-            COALESCE(jp.debit, 0)  as debit,
-            COALESCE(jp.credit, 0) as credit
-        ")
-            ->orderByRaw("$effDateExpr ASC")
-            ->orderBy('jp.id', 'ASC')          // tie-breaker for identical timestamps
-            ->skip(($page - 1) * $perPage)
-            ->take($perPage)
-            ->get();
-
-        // --------------------------
-        // 3) priorDelta (inside filter) before first row of this page
-        // --------------------------
-        $openingForPage = $opening;
-        if ($page > 1 && $pageRows->isNotEmpty()) {
-            $first    = $pageRows->first();
-            $firstDate = (string)$first->eff_date;
-            $firstId   = (int)$first->posting_id;
-
-            $priorQ = DB::table('journal_postings as jp')
-                ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
-                ->whereIn('jp.party_type', $partyTypes)
-                ->where('jp.party_id', $vendor->id);
-
-            if ($branchId) $priorQ->where('je.branch_id', $branchId);
-            if ($from)     $priorQ->whereRaw("$effDateExpr >= ?", [$from->copy()->startOfDay()->toDateTimeString()]);
-            if ($to)       $priorQ->whereRaw("$effDateExpr <= ?", [$to->copy()->endOfDay()->toDateTimeString()]);
-
-            $priorQ->where(function ($q) use ($effDateExpr, $firstDate, $firstId) {
-                $q->whereRaw("$effDateExpr < ?", [$firstDate])
-                    ->orWhere(function ($q2) use ($effDateExpr, $firstDate, $firstId) {
-                        $q2->whereRaw("$effDateExpr = ?", [$firstDate])
-                            ->where('jp.id', '<', $firstId);
-                    });
-            });
-
-            $priorDelta = (float) $priorQ
-                ->selectRaw('COALESCE(SUM(jp.credit - jp.debit), 0) as bal')
-                ->value('bal');
-
-            $openingForPage += $priorDelta;
-        }
-
-        // --------------------------
-        // 4) Build items with running AP balance (credit - debit)
-        // --------------------------
-        $running = $openingForPage;
-        $items = $pageRows->map(function ($r) use (&$running) {
-            $debit  = (float)$r->debit;
-            $credit = (float)$r->credit;
-            $running += ($credit - $debit); // AP running balance
-
-            return [
-                'posting_id'       => (int)$r->posting_id,
-                'journal_entry_id' => (int)$r->journal_entry_id,
-                'date'             => (string)$r->eff_date,
-                'branch_id'        => (int)$r->branch_id,
-                'account_name'     => $r->account_name,  // may be null
-                'memo'             => $r->memo,
-                'debit'            => $debit,
-                'credit'           => $credit,
-                'balance'          => round($running, 2), // +ve => payable
-            ];
-        });
-
-        return ApiResponse::success([
-            'opening'           => round($opening, 2),         // before 'from'
-            'opening_for_page'  => round($openingForPage, 2),  // balance at top of this page
-            'items'             => $items,
-            'total'             => $total,
-            'per_page'          => $perPage,
-            'current_page'      => $page,
-            'last_page'         => (int)ceil($total / $perPage),
-        ], 'Vendor ledger fetched successfully');
+        $label = ucfirst($data['party_type']) . ' ledger fetched successfully';
+        return ApiResponse::success($data, $label);
     }
 
     public function storePayment(Request $request, Vendor $vendor, VendorPaymentService $vendorPaymentService)

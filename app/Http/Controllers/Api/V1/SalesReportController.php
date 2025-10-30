@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Http\Response\ApiResponse;
 use App\Services\SalesReportService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -23,9 +24,11 @@ class SalesReportController extends Controller
             $this->dt($r->query('to')),
             $r->integer('branch_id'),
             $r->integer('salesman_id'),
-            $r->integer('customer_id')
+            $r->integer('customer_id'),
+            $r->integer('page'),
+            $r->integer('per_page')
         );
-        return response()->json(['data' => $res]);
+        return ApiResponse::success($res);
     }
 
     public function topBottom(Request $r)
@@ -43,6 +46,6 @@ class SalesReportController extends Controller
             (int)$r->query('page', 1),
             (int)$r->query('per_page', 20)
         );
-        return response()->json(['data' => $res]);
+        return ApiResponse::success($res);
     }
 }
