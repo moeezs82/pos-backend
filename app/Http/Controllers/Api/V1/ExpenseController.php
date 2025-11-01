@@ -18,7 +18,7 @@ class ExpenseController extends Controller
     public function store(Request $request, AccountingService $acct)
     {
         $data = $request->validate([
-            'branch_id'           => 'required|integer|exists:branches,id',
+            'branch_id'           => 'nullable|integer|exists:branches,id',
             'txn_date'            => 'nullable|date_format:Y-m-d',
             'reference'           => 'nullable|string|max:191',
             'note'                => 'nullable|string|max:2000',
@@ -54,7 +54,7 @@ class ExpenseController extends Controller
         }
 
         // Resolve branch / date / mode / status
-        $branchId = (int)($data['branch_id'] ?? 0);
+        $branchId = $data['branch_id'] ?? null;
         $entryDate = $data['txn_date'] ?? Carbon::today()->toDateString();
         $single    = (bool)($data['single_entry'] ?? true);
         $status    = $data['status'] ?? 'approved'; // if you have a status column on journal_entries

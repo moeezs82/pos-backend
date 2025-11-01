@@ -231,6 +231,7 @@ Route::prefix('v1')->group(function () {
                 Route::get('/top-bottom',    [SalesReportController::class, 'topBottom']);
             });
             Route::get('/ledger', [ReportController::class, 'ledger']);
+            Route::get('/cashbook/daily', [ReportController::class, 'cashbookDaily']);
         });
     });
 });

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
+use App\Services\CashbookService;
 use App\Services\LedgerService;
 use Illuminate\Http\Request;
 
@@ -33,5 +34,11 @@ class ReportController extends Controller
 
         $label = ucfirst($data['party_type']) . ' ledger fetched successfully';
         return ApiResponse::success($data, $label);
+    }
+
+    public function cashbookDaily(Request $request, CashbookService $svc)
+    {
+        $data = $svc->dailySummary($request->all());
+        return ApiResponse::success($data, 'Daily cashbook summary generated');
     }
 }
