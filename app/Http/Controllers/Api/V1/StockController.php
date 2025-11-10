@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
 use App\Models\ProductStock;
 use App\Models\StockMovement;
+use App\Services\AccountingService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -29,32 +30,91 @@ class StockController extends Controller
     }
 
     // Adjust stock (increase/decrease manually)
-    public function adjust(Request $request)
+    public function adjust(Request $request, AccountingService $accounting)
     {
         $data = $request->validate([
             'product_id' => 'required|exists:products,id',
-            'branch_id'  => 'required|exists:branches,id',
+            'branch_id'  => 'nullable|exists:branches,id',
             'quantity'   => 'required|integer', // +10 = add, -5 = reduce
             'reason'     => 'nullable|string'
         ]);
 
+        $branchId  = $data['branch_id'] ?? null;
+
         $stock = ProductStock::firstOrCreate(
-            ['product_id' => $data['product_id'], 'branch_id' => $data['branch_id']],
-            ['quantity' => 0]
-        );
+                ['product_id' => $data['product_id'], 'branch_id' => $branchId],
+                ['quantity' => 0]
+            );
+        
+        $qty       = (int) $data['quantity'];
+        $unitCost  = (float) $stock->avg_cost;
+        $amount    = round(abs($qty) * $unitCost, 2); // total valuation
+        $memo      = trim('Inventory adjustment: ' . ($data['reason'] ?? 'manual-adjustment'));
+        $entryDate = $data['entry_date'] ?? now()->toDateString();
+        $userId    = optional($request->user())->id;
 
-        $stock->quantity += $data['quantity'];
-        $stock->save();
+        if ($amount <= 0) {
+            return ApiResponse::error('Unit cost must be > 0 to post accounting.', 422);
+        }
 
-        StockMovement::create([
-            'product_id' => $data['product_id'],
-            'branch_id'  => $data['branch_id'],
-            'type'       => 'adjustment',
-            'quantity'   => $data['quantity'],
-            'reference'  => $data['reason'] ?? 'manual-adjustment'
-        ]);
+        // Account codes (from your seeder)
+        $accounts = [
+            'inventory' => '1400', // Inventory
+            'cogs'      => '5100', // COGS -> for negative adjustments (write-off)
+            'ppv'       => '5205', // Purchase Price Variance -> used as "gain" contra-expense for positive adjustments
+        ];
 
-        return ApiResponse::success($stock, 'Stock adjusted successfully');
+        $result = DB::transaction(function () use (
+            $data, $qty, $unitCost, $amount, $branchId, $memo, $entryDate, $userId, $accounts, $accounting, $stock
+        ) {
+            // 1) Adjust physical stock
+            
+            $stock->quantity += $qty;
+            $stock->save();
+
+            // 2) Record movement (store valuation too if columns exist; otherwise ignore gracefully)
+            $movementAttrs = [
+                'product_id' => $data['product_id'],
+                'branch_id'  => $branchId,
+                'type'       => 'adjustment',
+                'quantity'   => $qty,
+                'reference'  => $data['reason'] ?? 'manual-adjustment',
+                // Optional fields—uncomment if your table has them:
+                // 'unit_cost'  => $unitCost,
+                // 'amount'     => $amount,
+                // 'moved_at'   => $entryDate,
+            ];
+            /** @var \App\Models\StockMovement $movement */
+            $movement = StockMovement::create($movementAttrs);
+
+            // 3) Post accounting (double-entry)
+            // Positive qty => increase inventory: DR Inventory, CR PPV (acting as gain/contra-expense)
+            // Negative qty => write-off:        DR COGS,     CR Inventory
+            if ($qty > 0) {
+                $lines = [
+                    ['account_code' => $accounts['inventory'], 'debit' => $amount, 'credit' => 0],
+                    ['account_code' => $accounts['ppv'],       'debit' => 0,       'credit' => $amount],
+                ];
+            } else {
+                $lines = [
+                    ['account_code' => $accounts['cogs'],      'debit' => $amount, 'credit' => 0],
+                    ['account_code' => $accounts['inventory'], 'debit' => 0,       'credit' => $amount],
+                ];
+            }
+
+            $je = $accounting->post(
+                $branchId,
+                $memo,
+                $movement,   // will be saved as reference_type/id in journal_entries
+                $lines,
+                $entryDate,
+                $userId
+            );
+
+            return compact('stock', 'movement', 'je');
+        });
+
+        return ApiResponse::success($result, 'Stock adjusted and journal posted successfully');
     }
 
     // Transfer stock between branches

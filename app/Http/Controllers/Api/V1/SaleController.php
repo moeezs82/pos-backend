@@ -232,12 +232,7 @@ class SaleController extends Controller
                     'quantity'   => $qty,
                     'price'      => $price,            // unit price before discount
                     'discount'   => $discountPct,      // store the % value you added
-                    // Optional (only if you have these columns): 
-                    // 'discount_amount' => $lineDiscount,
-                    // 'subtotal'        => $lineSubtotal,
-
                     'total'      => $lineTotal,        // NET line total after % discount
-
                     // costs
                     'unit_cost'  => $unitCost,
                     'line_cost'  => $lineCost,

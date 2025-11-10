@@ -27,7 +27,8 @@ class CustomerRequest extends FormRequest
             'email'      => 'nullable|email|unique:customers,email,' . $this->id,
             'phone'      => 'required|string|max:20|unique:customers,phone,' . $this->id,
             'address'      => 'string|nullable',
-            'password'   => $this->isMethod('post') ? 'required|string|min:6' : 'nullable|string|min:6',
+            // 'password'   => $this->isMethod('post') ? 'required|string|min:6' : 'nullable|string|min:6',
+            'password'   => $this->isMethod('post') ? 'nullable|string|min:6' : 'nullable|string|min:6',
             'status'     => 'in:active,inactive,blocked',
             'meta'       => 'nullable|array',
         ];

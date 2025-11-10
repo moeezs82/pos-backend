@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
 use App\Services\CashbookService;
 use App\Services\LedgerService;
+use App\Services\StockMovementReportService;
 use Illuminate\Http\Request;
 
 class ReportController extends Controller
@@ -40,5 +41,11 @@ class ReportController extends Controller
     {
         $data = $svc->dailySummary($request->all());
         return ApiResponse::success($data, 'Daily cashbook summary generated');
+    }
+
+    public function stockMovement(Request $request, StockMovementReportService $svc)
+    {
+        $data = $svc->movementDetail($request->all());
+        return ApiResponse::success($data, 'Stock movement report generated');
     }
 }

@@ -147,9 +147,9 @@ class CustomerController extends Controller
     {
         $data = $request->validated();
 
-        if (isset($data['password'])) {
-            $data['password'] = Hash::make($data['password']);
-        }
+        // if (isset($data['password'])) {
+        //     $data['password'] = Hash::make($data['password']);
+        // }
         $customer = Customer::create($data);
         return ApiResponse::success(new CustomerResource($customer), 'Customer created successfully');
     }
