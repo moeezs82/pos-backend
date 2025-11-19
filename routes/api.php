@@ -233,6 +233,8 @@ Route::prefix('v1')->group(function () {
             Route::get('/ledger', [ReportController::class, 'ledger']);
             Route::get('/cashbook-daily', [ReportController::class, 'cashbookDaily']);
             Route::get('/stock-movement', [ReportController::class, 'stockMovement']);
+            Route::get('/profit-loss', [ReportController::class, 'profitLoss']);
+            Route::get('/return-analytics', [ReportController::class, 'returnAnalytics']);
         });
     });
 });

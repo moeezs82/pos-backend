@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
 use App\Services\CashbookService;
 use App\Services\LedgerService;
+use App\Services\ReturnAnalyticsService;
 use App\Services\StockMovementReportService;
 use Illuminate\Http\Request;
 
@@ -47,5 +48,40 @@ class ReportController extends Controller
     {
         $data = $svc->movementDetail($request->all());
         return ApiResponse::success($data, 'Stock movement report generated');
+    }
+
+    public function profitLoss(Request $request, \App\Services\ProfitLossService $svc)
+    {
+        $from = $request->date('from'); // Carbon|null
+        $to   = $request->date('to');   // Carbon|null
+
+        $data = $svc->summary([
+            'from'      => $from,
+            'to'        => $to,
+            'branch_id' => $request->integer('branch_id') ?: null,
+        ]);
+
+        return ApiResponse::success($data, 'Profit & loss report generated successfully');
+    }
+
+    public function returnAnalytics(Request $request, ReturnAnalyticsService $svc)
+    {
+        $from = $request->date('from'); // Carbon|null
+        $to   = $request->date('to');   // Carbon|null
+
+        $page    = max(1, (int)$request->get('page', 1));
+        $perPage = max(1, (int)$request->get('per_page', 30));
+
+        $data = $svc->analytics(
+            $from,
+            $to,
+            $request->integer('branch_id') ?: null,
+            $request->integer('salesman_id') ?: null,
+            $request->integer('customer_id') ?: null,
+            $page,
+            $perPage
+        );
+
+        return ApiResponse::success($data, 'Return analytics report generated successfully');
     }
 }

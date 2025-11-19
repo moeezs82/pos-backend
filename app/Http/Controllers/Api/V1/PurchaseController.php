@@ -139,10 +139,7 @@ class PurchaseController extends Controller
             'payment.amount' => 'required_with:payment|numeric|min:0.01',
             'payment.paid_at' => 'nullable|date',
             'payment.reference' => 'nullable|string',
-            'payment.note' => 'nullable|string',
-            'payment.allocations' => 'array',
-            'payment.allocations.*.purchase_id' => 'required_with:payment.allocations|exists:purchases,id',
-            'payment.allocations.*.amount'      => 'required_with:payment.allocations|numeric|min:0.01',
+            'payment.note' => 'nullable|string'
         ]);
 
         $receiveNow = (bool)($data['receive_now'] ?? false);
@@ -666,7 +663,7 @@ class PurchaseController extends Controller
 
     protected function generateNumber(string $prefix): string
     {
-        return $prefix . '-' . time();
+        return $prefix . '-' . time().rand(1000,9999);
     }
 
     protected function recalculatePurchase(Purchase $purchase): void
