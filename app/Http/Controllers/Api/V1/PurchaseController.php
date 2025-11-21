@@ -73,7 +73,16 @@ class PurchaseController extends Controller
             ];
 
             // Recompute subtotal from current items (no edits to items in this endpoint)
-            $subtotal = $purchase->items->sum(fn($i) => ((float)$i->quantity) * ((float)$i->price));
+            $subtotal = $purchase->items->sum(function ($i) {
+                $qty       = (float) $i->quantity;
+                $price     = (float) $i->price;
+                $discPct   = (float) ($i->discount ?? 0); // e.g. 10 for 10%
+
+                $lineTotal = $qty * $price;
+                $discValue = $lineTotal * ($discPct / 100);
+
+                return $lineTotal - $discValue;
+            });
 
             $discount = array_key_exists('discount', $data) ? (float)$data['discount'] : (float)$purchase->discount;
             $tax      = array_key_exists('tax', $data) ? (float)$data['tax']      : (float)$purchase->tax;
@@ -408,7 +417,7 @@ class PurchaseController extends Controller
                 'product_id' => (int)$data['product_id'],
                 'quantity'   => (int)$data['quantity'],
                 'price'      => (float)$data['price'],
-                'discount'   => (float)$data['discount']??0.00,
+                'discount'   => (float)$data['discount'] ?? 0.00,
                 'total'      => $lineTotal,
             ]);
 
@@ -663,7 +672,7 @@ class PurchaseController extends Controller
 
     protected function generateNumber(string $prefix): string
     {
-        return $prefix . '-' . time().rand(1000,9999);
+        return $prefix . '-' . time() . rand(1000, 9999);
     }
 
     protected function recalculatePurchase(Purchase $purchase): void

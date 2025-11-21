@@ -30,7 +30,7 @@ class UserRequest extends FormRequest
             'password'  => [$this->isMethod('post') ? 'required' : 'nullable','string','min:6'],
             'is_active' => ['boolean'],
             // Optional: role/permission sync at creation time
-            'roles'         => ['sometimes','array'],
+            'roles'   => ['sometimes', 'array', 'min:1', 'max:1'],
             'roles.*'       => ['string']
         ];
     }

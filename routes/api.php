@@ -225,7 +225,7 @@ Route::prefix('v1')->group(function () {
             // Route::get('/day-details', [CashbookController::class, 'dailyDetails']);
         });
 
-        Route::prefix('/reports')->group(function () {
+        Route::prefix('/reports')->middleware('view-reports')->group(function () {
             Route::prefix('/sales')->group(function() {
                 Route::get('/daily-summary', [SalesReportController::class, 'dailySummary']);
                 Route::get('/top-bottom',    [SalesReportController::class, 'topBottom']);

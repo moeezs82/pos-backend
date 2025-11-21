@@ -40,7 +40,6 @@ class RolePermissionSeeder extends Seeder
             'view-sales',
             'manage-purchases',
             'view-purchases',
-            'view-reports',
             'manage-users',
             'view-branches',
             'manage-branches',
@@ -60,7 +59,7 @@ class RolePermissionSeeder extends Seeder
         // Define roles
         $admin = Role::firstOrCreate(['name' => 'admin']);
         $manager = Role::firstOrCreate(['name' => 'manager']);
-        $cashier = Role::firstOrCreate(['name' => 'cashier']);
+        // $cashier = Role::firstOrCreate(['name' => 'cashier']);
         $salesman = Role::firstOrCreate(['name' => 'salesman']);
 
         // Assign permissions
@@ -74,17 +73,18 @@ class RolePermissionSeeder extends Seeder
             'view-reports'
         ]);
 
-        $cashier->givePermissionTo([
-            'create-sales',
-            'refund-sale',
-            'view-sales'
-        ]);
+        // $cashier->givePermissionTo([
+        //     'create-sales',
+        //     'refund-sale',
+        //     'view-sales'
+        // ]);
         $salesman->givePermissionTo([
             'create-sales',
             'refund-sale',
             'view-sales',
             'view-customers',
             'view-vendors',
+            'view-products'
         ]);
     }
 }

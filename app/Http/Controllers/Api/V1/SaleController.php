@@ -332,7 +332,16 @@ class SaleController extends Controller
             ];
 
             // Recompute subtotal from items (items not edited here)
-            $subtotal = $sale->items->sum(fn($i) => ((float)$i->quantity) * ((float)$i->price));
+            $subtotal = $sale->items->sum(function ($i) {
+                $qty       = (float) $i->quantity;
+                $price     = (float) $i->price;
+                $discPct   = (float) ($i->discount ?? 0); // e.g. 10 for 10%
+
+                $lineTotal = $qty * $price;
+                $discValue = $lineTotal * ($discPct / 100);
+
+                return $lineTotal - $discValue;
+            });
 
             $discount = array_key_exists('discount', $data) ? (float)$data['discount'] : (float)$sale->discount;
             $tax      = array_key_exists('tax', $data)      ? (float)$data['tax']      : (float)$sale->tax;
