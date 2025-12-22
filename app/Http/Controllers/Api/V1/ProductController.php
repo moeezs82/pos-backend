@@ -138,6 +138,9 @@ class ProductController extends Controller
                         userId: auth()->id()
                     );
                 }
+            } else {
+                // ensure a stock row exists even if no stock is initialized
+                ProductStock::firstOrCreate(['product_id'=>$product->id,'branch_id'=>null, 'quantity'=>0, 'avg_cost'=> $request->cost_price ?? 0]);
             }
 
             // initialize stock in all branches
@@ -230,6 +233,9 @@ class ProductController extends Controller
             'discount'       => 'nullable|numeric',
             'is_active'      => 'boolean',
         ]);
+        if ($product->cost_price != ($data['cost_price'] ?? $product->cost_price)) {
+            DB::table('product_stocks')->where('product_id', $product->id)->update(['avg_cost' => $data['cost_price']]);
+        }
 
         $product->update($data);
 

@@ -22,7 +22,8 @@ class SalesReportController extends Controller
         $res = $this->svc->dailySummaryByDay(
             $this->dt($r->query('from')),
             $this->dt($r->query('to')),
-            $r->integer('branch_id'),
+            // $r->integer('branch_id'),
+            null,
             $r->integer('salesman_id'),
             $r->integer('customer_id'),
             $r->integer('page'),
@@ -36,7 +37,8 @@ class SalesReportController extends Controller
         $res = $this->svc->topBottomProducts(
             $r->filled('from') ? Carbon::parse($r->query('from')) : null,
             $r->filled('to')   ? Carbon::parse($r->query('to'))   : null,
-            $r->integer('branch_id'),
+            // $r->integer('branch_id'),
+            null,
             $r->integer('salesman_id'),
             $r->integer('customer_id'),
             $r->integer('category_id'),

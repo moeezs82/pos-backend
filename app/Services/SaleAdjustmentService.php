@@ -29,8 +29,8 @@ class SaleAdjustmentService
     {
         $date ??= now()->toDateString();
 
-        $oldNet = max(0, (float)$old['subtotal'] - (float)$old['discount']);
-        $newNet = max(0, (float)$new['subtotal'] - (float)$new['discount']);
+        $oldNet = max(0, (float)$old['subtotal'] - (float)$old['discount'] + (float)$old['delivery']);
+        $newNet = max(0, (float)$new['subtotal'] - (float)$new['discount'] + (float)$new['delivery']);
 
         $deltaNet = round($newNet - $oldNet, 2); // revenue portion change
         $deltaTax = round(((float)$new['tax']) - ((float)$old['tax']), 2);

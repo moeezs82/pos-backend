@@ -19,9 +19,9 @@ class SaleController extends Controller
         $query = Sale::with(['customer', 'branch'])
             ->withSum('payments as paid_amount', 'amount');
 
-        if ($request->has('branch_id')) {
-            $query->where('branch_id', $request->branch_id);
-        }
+        // if ($request->has('branch_id')) {
+        //     $query->where('branch_id', $request->branch_id);
+        // }
         if ($request->filled('customer_id')) {
             $query->where('customer_id', $request->customer_id);
         }
@@ -141,7 +141,7 @@ class SaleController extends Controller
             'vendor_id'   => 'nullable|exists:vendors,id',
             'salesman_id' => 'nullable|exists:users,id',
             'created_by'  => 'nullable|exists:users,id',
-            'branch_id'   => 'nullable|exists:branches,id',
+            // 'branch_id'   => 'nullable|exists:branches,id',
             'items'       => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
             'items.*.discount_pct' => 'nullable|numeric',
@@ -149,7 +149,9 @@ class SaleController extends Controller
             'items.*.price'      => 'required|numeric|min:0',
             'discount'    => 'nullable|numeric|min:0',
             'tax'         => 'nullable|numeric|min:0',
-            'payments'    => 'array', // optional receipts info
+            'delivery'         => 'nullable|numeric|min:0',
+            'payments'    => 'array', 
+            'meta' => 'nullable|array',
         ]);
 
         $branchId = $data['branch_id'] ?? null;
@@ -169,7 +171,8 @@ class SaleController extends Controller
             });
             $discount = (float)($data['discount'] ?? 0);
             $tax      = (float)($data['tax'] ?? 0);
-            $total    = max(0, round($subtotal - $discount + $tax, 2));
+            $delivery      = (float)($data['delivery'] ?? 0);
+            $total    = max(0, round($subtotal - $discount + $tax + $delivery, 2));
 
             // create sale header
             $sale = Sale::create([
@@ -182,8 +185,10 @@ class SaleController extends Controller
                 'subtotal'    => round($subtotal, 2),
                 'discount'    => round($discount, 2),
                 'tax'         => round($tax, 2),
+                'delivery'    => round($delivery, 2),
                 'total'       => $total,
                 'status'      => 'pending',
+                'meta'        => $data['meta'] ?? [],
             ]);
 
             // gather product IDs once
@@ -313,6 +318,7 @@ class SaleController extends Controller
         $data = $request->validate([
             'discount' => 'nullable|numeric|min:0',
             'tax'      => 'nullable|numeric|min:0',
+            'delivery'      => 'nullable|numeric|min:0',
         ]);
 
         $sale = Sale::with(['items', 'payments'])->findOrFail($id);
@@ -328,6 +334,7 @@ class SaleController extends Controller
                 'subtotal' => (float)$sale->subtotal,
                 'discount' => (float)$sale->discount,
                 'tax'      => (float)$sale->tax,
+                'delivery'      => (float)$sale->delivery,
                 'total'    => (float)$sale->total,
             ];
 
@@ -345,14 +352,16 @@ class SaleController extends Controller
 
             $discount = array_key_exists('discount', $data) ? (float)$data['discount'] : (float)$sale->discount;
             $tax      = array_key_exists('tax', $data)      ? (float)$data['tax']      : (float)$sale->tax;
+            $delivery = array_key_exists('delivery', $data) ? (float)$data['delivery'] : (float)$sale->delivery;
 
-            $total = max(0, round($subtotal - $discount + $tax, 2));
+            $total = max(0, round($subtotal - $discount + $tax + $delivery, 2));
 
             // Persist new totals
             $sale->update([
                 'subtotal' => round($subtotal, 2),
                 'discount' => round($discount, 2),
                 'tax'      => round($tax, 2),
+                'delivery' => round($delivery, 2),
                 'total'    => $total,
             ]);
 
@@ -370,6 +379,7 @@ class SaleController extends Controller
                     'subtotal' => round($subtotal, 2),
                     'discount' => round($discount, 2),
                     'tax'      => round($tax, 2),
+                    'delivery' => round($delivery, 2),
                     'total'    => $total,
                 ],
                 now()->toDateString()

@@ -43,7 +43,8 @@ class CashbookService
             throw new InvalidArgumentException('`from` must be on or before `to`.');
         }
 
-        $branchId    = isset($p['branch_id']) ? (int)$p['branch_id'] : null;
+        // $branchId    = isset($p['branch_id']) ? (int)$p['branch_id'] : null;
+        $branchId    = null;
         $page        = isset($p['page']) ? max(1, (int)$p['page']) : null;
         $perPage     = isset($p['per_page']) ? max(1, min(5000, (int)$p['per_page'])) : 1000;
         $includeBank = array_key_exists('include_bank', $p) ? (bool)$p['include_bank'] : true;

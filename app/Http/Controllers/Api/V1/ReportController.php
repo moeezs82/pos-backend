@@ -58,7 +58,8 @@ class ReportController extends Controller
         $data = $svc->summary([
             'from'      => $from,
             'to'        => $to,
-            'branch_id' => $request->integer('branch_id') ?: null,
+            // 'branch_id' => $request->integer('branch_id') ?: null,
+            null,
         ]);
 
         return ApiResponse::success($data, 'Profit & loss report generated successfully');

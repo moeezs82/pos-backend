@@ -26,9 +26,9 @@ class SaleReturnController extends Controller
         $query = SaleReturn::with(['sale:id,invoice_no,customer_id,branch_id', 'sale.customer:id,first_name,last_name', 'sale.branch:id,name'])
             ->withSum('refunds as refund_total', 'amount');
 
-        if ($request->branch_id) {
-            $query->where('branch_id', $request->branch_id);
-        }
+        // if ($request->branch_id) {
+        //     $query->where('branch_id', $request->branch_id);
+        // }
 
         if ($request->customer_id) {
             $query->where('customer_id', $request->customer_id);

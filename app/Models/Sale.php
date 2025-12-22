@@ -19,10 +19,16 @@ class Sale extends Model
         'subtotal',
         'discount',
         'tax',
+        'delivery',
         'total',
         'status',
         'cogs',
-        'gross_profit'
+        'gross_profit',
+        'meta'
+    ];
+
+    protected $casts = [
+        'meta' => 'array',
     ];
 
     public function items()

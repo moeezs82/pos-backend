@@ -21,7 +21,7 @@ class SalePostingService
         // COGS                              DR cogs
         // Inventory                          CR cogs
 
-        $subtotalNet = $sale->subtotal - $sale->discount;
+        $subtotalNet = $sale->subtotal - $sale->discount + $sale->delivery;
         $revenue     = max($subtotalNet, 0);
         $tax         = $sale->tax;
         $total       = $sale->total;
