@@ -654,7 +654,7 @@ class CashBookController extends Controller
             'method'     => ['nullable', 'string', 'max:50'], // required if account_id is null
             'amount'     => ['required', 'numeric', 'min:0.01'],
             'txn_date'   => ['nullable', 'date'],
-            'branch_id'  => ['nullable', 'exists:branches,id'],
+            // 'branch_id'  => ['nullable', 'exists:branches,id'],
             'reference'  => ['nullable', 'string', 'max:190'],
             'note'       => ['nullable', 'string'],
             'status'     => ['nullable', Rule::in(['pending', 'approved'])],

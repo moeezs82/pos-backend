@@ -20,9 +20,9 @@ class PurchaseController extends Controller
         $query = Purchase::with(['vendor', 'branch'])
             ->withSum('payments as paid_amount', 'amount');
 
-        if ($request->filled('branch_id')) {
-            $query->where('branch_id', $request->branch_id);
-        }
+        // if ($request->filled('branch_id')) {
+        //     $query->where('branch_id', $request->branch_id);
+        // }
         if ($request->filled('vendor_id')) {
             $query->where('vendor_id', $request->vendor_id);
         }
@@ -128,7 +128,7 @@ class PurchaseController extends Controller
     {
         $data = $request->validate([
             'vendor_id' => 'required|exists:vendors,id',
-            'branch_id' => 'nullable|exists:branches,id',
+            // 'branch_id' => 'nullable|exists:branches,id',
             'invoice_date' => 'nullable|date',
             'items' => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
@@ -171,7 +171,7 @@ class PurchaseController extends Controller
             $p = Purchase::create([
                 'invoice_no'     => $this->generateNumber('PUR'),
                 'vendor_id'      => $data['vendor_id'],
-                'branch_id'      => $data['branch_id'],
+                // 'branch_id'      => $data['branch_id'],
                 'invoice_date'   => $data['invoice_date'] ?? now()->toDateString(),
                 'subtotal'       => round($subtotal, 2),
                 'discount'       => round($data['discount'] ?? 0, 2),

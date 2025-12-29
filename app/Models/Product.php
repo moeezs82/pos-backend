@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 class Product extends Model
 {
     use SoftDeletes, HasFactory;
-    
+
     protected $fillable = [
         'sku',
         'barcode',
@@ -27,8 +27,16 @@ class Product extends Model
         'tax_rate',
         'tax_inclusive',
         'discount',
-        'is_active'
+        'is_active',
+        'image'
     ];
+
+    public function getImageUrlAttribute()
+    {
+        return $this->image ? asset($this->image) : null;
+    }
+
+    protected $appends = ['image_url'];
 
     public function category()
     {

@@ -26,7 +26,7 @@ class UserRequest extends FormRequest
             'name'      => ['required','string','max:120'],
             'email'     => ['required','max:80',"unique:users,email,{$id}"],
             'phone'     => ['nullable','string','max:50'],
-            'branch_id'     => ['nullable','exists:branches,id'],
+            // 'branch_id'     => ['nullable','exists:branches,id'],
             'password'  => [$this->isMethod('post') ? 'required' : 'nullable','string','min:6'],
             'is_active' => ['boolean'],
             // Optional: role/permission sync at creation time

@@ -13,9 +13,9 @@ class UserController extends Controller
 {
     public function index(Request $request)
     {
-        $request->validate([
-            'branch_id' => 'nullable|exists:branches,id'
-        ]);
+        // $request->validate([
+        //     // 'branch_id' => 'nullable|exists:branches,id'
+        // ]);
 
         $q = User::query()
             ->when($request->filled('search'), function ($q) use ($request) {
@@ -24,13 +24,13 @@ class UserController extends Controller
                     ->orWhere('email', 'like', "%{$s}%")
                     ->orWhere('phone', 'like', "%{$s}%"));
             })
-            ->when($request->filled('branch_id'), function ($q) use ($request) {
-                $branchId = $request->string('branch_id');
-                $q->where(function ($q) use ($branchId) {
-                    $q->where('branch_id', $branchId)
-                        ->orWhereNull('branch_id');
-                });
-            })
+            // ->when($request->filled('branch_id'), function ($q) use ($request) {
+            //     $branchId = $request->string('branch_id');
+            //     $q->where(function ($q) use ($branchId) {
+            //         $q->where('branch_id', $branchId)
+            //             ->orWhereNull('branch_id');
+            //     });
+            // })
             ->with(['roles:id,name', 'permissions:id,name']);
 
         return ApiResponse::success($q->paginate($request->integer('per_page', 20)));
@@ -46,7 +46,7 @@ class UserController extends Controller
             'email'     => $data['email'],
             'phone'     => $data['phone'] ?? null,
             'password'  => $data['password'],
-            'branch_id' => $data['branch_id'] ?? null,
+            // 'branch_id' => $data['branch_id'] ?? null,
             'is_active' => $data['is_active'] ?? true,
         ]);
 

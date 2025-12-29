@@ -8,6 +8,7 @@ use App\Models\Product;
 use App\Models\ProductStock;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 
 class ProductController extends Controller
 {
@@ -99,9 +100,23 @@ class ProductController extends Controller
             'tax_inclusive'  => 'boolean',
             'discount'       => 'nullable|numeric',
             'is_active'      => 'boolean',
+            // ✅ image
+            'image'           => 'nullable|image|mimes:jpg,jpeg,png,webp|max:2048',
         ]);
 
         return DB::transaction(function () use ($data, $request) {
+            // ✅ Save image path in $data
+            if ($request->hasFile('image')) {
+                $file = $request->file('image');
+
+                $ext  = $file->getClientOriginalExtension();
+                $name = 'p_' . time() . '_' . uniqid() . '.' . $ext;
+
+                $file->move(public_path('images/products'), $name);
+
+                // Save relative path in DB
+                $data['image'] = 'images/products/' . $name;
+            }
             $product = Product::create($data);
             if ($request->has('stock') && $request->stock > 0) {
                 $unitCost = (float) ($data['cost_price'] ?? 0); // cost given while creating product
@@ -140,7 +155,7 @@ class ProductController extends Controller
                 }
             } else {
                 // ensure a stock row exists even if no stock is initialized
-                ProductStock::firstOrCreate(['product_id'=>$product->id,'branch_id'=>null, 'quantity'=>0, 'avg_cost'=> $request->cost_price ?? 0]);
+                ProductStock::firstOrCreate(['product_id' => $product->id, 'branch_id' => null, 'quantity' => 0, 'avg_cost' => $request->cost_price ?? 0]);
             }
 
             // initialize stock in all branches
@@ -232,7 +247,29 @@ class ProductController extends Controller
             'tax_inclusive'  => 'boolean',
             'discount'       => 'nullable|numeric',
             'is_active'      => 'boolean',
+            'image'           => 'nullable|image|mimes:jpg,jpeg,png,webp|max:2048',
         ]);
+        if ($request->hasFile('image')) {
+
+            // delete old
+            if (!empty($product->image) && file_exists(public_path($product->image))) {
+                @unlink(public_path($product->image));
+            }
+
+            $file = $request->file('image');
+            $ext  = $file->getClientOriginalExtension();
+            $name = 'p_' . time() . '_' . uniqid() . '.' . $ext;
+
+            // make sure directory exists
+            $dir = public_path('images/products');
+            if (!is_dir($dir)) {
+                mkdir($dir, 0755, true);
+            }
+
+            $file->move($dir, $name);
+
+            $data['image'] = 'images/products/' . $name;
+        }
         if ($product->cost_price != ($data['cost_price'] ?? $product->cost_price)) {
             DB::table('product_stocks')->where('product_id', $product->id)->update(['avg_cost' => $data['cost_price']]);
         }
