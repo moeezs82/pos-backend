@@ -169,6 +169,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/', [SaleController::class, 'store'])->middleware('permission:create-sales');
             Route::get('/{id}', [SaleController::class, 'show'])->middleware('permission:view-sales');
             Route::put('/{id}', [SaleController::class, 'update'])->middleware('permission:manage-sales');
+            Route::put('/{id}/delivery-boy', [SaleController::class, 'updateDeliveryBoy'])->middleware('permission:manage-sales');
             Route::prefix('{sale}')->middleware('permission:manage-sales')->group(function () {
                 Route::post('payments', [PaymentController::class, 'store']);
                 // Route::put('payments/{payment}', [PaymentController::class, 'update']);

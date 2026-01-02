@@ -15,6 +15,7 @@ class Sale extends Model
         'branch_id',
         'vendor_id',
         'salesman_id',
+        'delivery_boy_id',
         'created_by',
         'subtotal',
         'discount',
@@ -24,7 +25,8 @@ class Sale extends Model
         'status',
         'cogs',
         'gross_profit',
-        'meta'
+        'meta',
+        'sale_type'
     ];
 
     protected $casts = [
@@ -48,6 +50,11 @@ class Sale extends Model
     public function customer()
     {
         return $this->belongsTo(Customer::class);
+    }
+
+    public function deliveryBoy()
+    {
+        return $this->belongsTo(User::class, 'delivery_boy_id');
     }
 
     public function branch()

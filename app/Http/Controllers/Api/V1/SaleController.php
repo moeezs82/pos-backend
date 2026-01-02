@@ -25,6 +25,9 @@ class SaleController extends Controller
         if ($request->filled('customer_id')) {
             $query->where('customer_id', $request->customer_id);
         }
+        if ($request->filled('sale_type')) {
+            $query->where('sale_type', $request->sale_type);
+        }
         if ($request->filled('vendor_id')) {
             $query->where('vendor_id', $request->vendor_id);
         }
@@ -73,6 +76,7 @@ class SaleController extends Controller
             'payments',
             'vendor:id,first_name,last_name',
             'salesman:id,name',
+            'deliveryBoy:id,name'
         ])->findOrFail($id);
 
         $asOf = $sale->created_at;             // optional ISO date/time, e.g. 2025-10-26 or 2025-10-26 23:59:59
@@ -140,6 +144,7 @@ class SaleController extends Controller
             'customer_id' => 'nullable|exists:customers,id',
             'vendor_id'   => 'nullable|exists:vendors,id',
             'salesman_id' => 'nullable|exists:users,id',
+            'delivery_boy_id' => 'nullable|exists:users,id',
             'created_by'  => 'nullable|exists:users,id',
             // 'branch_id'   => 'nullable|exists:branches,id',
             'items'       => 'required|array|min:1',
@@ -150,8 +155,9 @@ class SaleController extends Controller
             'discount'    => 'nullable|numeric|min:0',
             'tax'         => 'nullable|numeric|min:0',
             'delivery'         => 'nullable|numeric|min:0',
-            'payments'    => 'array', 
+            'payments'    => 'array',
             'meta' => 'nullable|array',
+            'sale_type' => 'nullable|string|in:dine_in,takeaway,delivery,self',
         ]);
 
         $branchId = $data['branch_id'] ?? null;
@@ -180,6 +186,7 @@ class SaleController extends Controller
                 'customer_id' => $data['customer_id'] ?? null,
                 'vendor_id'   => $data['vendor_id'] ?? null,
                 'salesman_id' => $data['salesman_id'] ?? null,
+                'delivery_boy_id' => $data['delivery_boy_id'] ?? null,
                 'created_by'  => $data['created_by'] ?? auth()->id(),
                 'branch_id'   => $branchId,
                 'subtotal'    => round($subtotal, 2),
@@ -189,6 +196,7 @@ class SaleController extends Controller
                 'total'       => $total,
                 'status'      => 'pending',
                 'meta'        => $data['meta'] ?? [],
+                'sale_type' => $data['sale_type'] ?? 'dine_in',
             ]);
 
             // gather product IDs once
@@ -310,6 +318,18 @@ class SaleController extends Controller
         } else {
             $sale->update(['status' => 'pending']);
         }
+    }
+
+    public function updateDeliveryBoy(Request $request, $id)
+    {
+        $data = $request->validate([
+            'delivery_boy_id' => 'nullable|exists:users,id'
+        ]);
+
+        Sale::findOrFail($id);
+        $sale = Sale::findOrFail($id);
+        $sale->update($data);
+        return ApiResponse::success($sale->fresh(), 'Delivery boy updated successfully');
     }
 
     public function update(Request $request, $id)

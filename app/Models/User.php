@@ -50,4 +50,9 @@ class User extends Authenticatable
             'password' => 'hashed',
         ];
     }
+
+    public function deliveryBoyPayables()
+    {
+        return $this->hasMany(DeliveryBoyPayable::class, 'user_id');
+    }
 }
