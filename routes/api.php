@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\V1\CashBookController;
 use App\Http\Controllers\Api\V1\CategoryController;
 use App\Http\Controllers\Api\V1\CustomerController;
 use App\Http\Controllers\Api\V1\DayBookController;
+use App\Http\Controllers\Api\V1\DeliveryBoyController;
 use App\Http\Controllers\Api\V1\ExpenseController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\ProductController;
@@ -42,6 +43,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/me', function (Request $request) {
             return $request->user()->load('roles');
         });
+        Route::post('auth/verify-password', [AuthController::class, 'verifyPassword']);
 
         // Branches
         Route::get('/branches', [BranchController::class, 'index'])
@@ -66,6 +68,12 @@ Route::prefix('v1')->group(function () {
             // Assignments
             Route::post('/{user}/roles',        [UserController::class, 'syncRoles'])->middleware('permission:manage-users');
             // Route::post('/{user}/permissions',  [UserController::class, 'syncPermissions'])->middleware('permission:manage-users');
+        });
+        Route::prefix('delivery-boys')->group(function () {
+            Route::get('/{id}/cash-summary', [DeliveryBoyController::class, 'cashSummary']);
+            Route::get('/{id}/orders', [DeliveryBoyController::class, 'orders']);
+            Route::get('/{id}/received', [DeliveryBoyController::class, 'received']);
+            Route::post('/{id}/received', [DeliveryBoyController::class, 'storeReceived']);
         });
 
         // Roles
@@ -227,7 +235,7 @@ Route::prefix('v1')->group(function () {
         });
 
         Route::prefix('/reports')->middleware('permission:view-reports')->group(function () {
-            Route::prefix('/sales')->group(function() {
+            Route::prefix('/sales')->group(function () {
                 Route::get('/daily-summary', [SalesReportController::class, 'dailySummary']);
                 Route::get('/top-bottom',    [SalesReportController::class, 'topBottom']);
             });

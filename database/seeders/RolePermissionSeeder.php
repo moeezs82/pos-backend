@@ -59,7 +59,7 @@ class RolePermissionSeeder extends Seeder
         // Define roles
         $admin = Role::firstOrCreate(['name' => 'admin']);
         $manager = Role::firstOrCreate(['name' => 'manager']);
-        // $cashier = Role::firstOrCreate(['name' => 'cashier']);
+        $delivery = Role::firstOrCreate(['name' => 'delivery']);
         $salesman = Role::firstOrCreate(['name' => 'salesman']);
 
         // Assign permissions

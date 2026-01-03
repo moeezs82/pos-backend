@@ -24,6 +24,13 @@ class UserController extends Controller
                     ->orWhere('email', 'like', "%{$s}%")
                     ->orWhere('phone', 'like', "%{$s}%"));
             })
+            ->when($request->filled('role'), function ($q) use ($request) {
+                $roleName = $request->string('role')->toString();
+
+                $q->whereHas('roles', function ($rq) use ($roleName) {
+                    $rq->where('name', $roleName);
+                });
+            })
             // ->when($request->filled('branch_id'), function ($q) use ($request) {
             //     $branchId = $request->string('branch_id');
             //     $q->where(function ($q) use ($branchId) {
@@ -99,5 +106,37 @@ class UserController extends Controller
         $data = $request->validate(['roles' => ['array'], 'roles.*' => ['string']]);
         $user->syncRoles($data['roles'] ?? []);
         return ApiResponse::success($user->getRoleNames());
+    }
+
+    public function deliveryBoyCashSummary(Request $request, User $user)
+    {
+        // Optional filters
+        $from = $request->date('from'); // YYYY-MM-DD
+        $to   = $request->date('to');   // YYYY-MM-DD
+
+        $ordersQuery = $user->deliveryOrders()
+            ->when($from, fn ($q) => $q->whereDate('created_at', '>=', $from))
+            ->when($to,   fn ($q) => $q->whereDate('created_at', '<=', $to));
+
+        $receivedQuery = $user->deliveryBoyReceived()
+            ->when($from, fn ($q) => $q->whereDate('created_at', '>=', $from))
+            ->when($to,   fn ($q) => $q->whereDate('created_at', '<=', $to));
+
+        $ordersTotal   = (clone $ordersQuery)->sum('total');
+        $receivedTotal = (clone $receivedQuery)->sum('amount');
+
+        $data = [
+            'delivery_boy'   => ['id' => $user->id, 'name' => $user->name],
+            'filters'        => ['from' => $from?->toDateString(), 'to' => $to?->toDateString()],
+            'orders_total'   => (float) $ordersTotal,
+            'received_total' => (float) $receivedTotal,
+            'balance'        => (float) ($ordersTotal - $receivedTotal),
+
+            // Optional details (remove if you only want totals)
+            'orders'   => $ordersQuery->latest()->paginate($request->integer('orders_per_page', 20)),
+            'received' => $receivedQuery->latest()->paginate($request->integer('received_per_page', 20)),
+        ];
+
+        return ApiResponse::success($data);
     }
 }

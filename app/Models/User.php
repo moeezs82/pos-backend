@@ -51,8 +51,13 @@ class User extends Authenticatable
         ];
     }
 
-    public function deliveryBoyPayables()
+    public function deliveryBoyReceived()
     {
-        return $this->hasMany(DeliveryBoyPayable::class, 'user_id');
+        return $this->hasMany(DeliveryBoyReceived::class, 'user_id');
+    }
+
+    public function deliveryOrders()
+    {
+        return $this->hasMany(Sale::class, 'delivery_boy_id');
     }
 }

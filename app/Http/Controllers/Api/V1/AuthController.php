@@ -47,4 +47,22 @@ class AuthController extends Controller
         $request->user()->tokens()->delete();
         return ApiResponse::success(null, 'Logged out successfully');
     }
+
+    public function verifyPassword(Request $request)
+    {
+        $data = $request->validate([
+            'password' => ['required', 'string', 'max:255'],
+        ]);
+
+        $user = $request->user(); // ✅ from Bearer token auth middleware
+        if (!$user) {
+            return ApiResponse::error('Unauthenticated', 401);
+        }
+
+        $ok = Hash::check($data['password'], $user->password);
+
+        return ApiResponse::success([
+            'ok' => $ok,
+        ], $ok ? 'OK' : 'Invalid password');
+    }
 }
