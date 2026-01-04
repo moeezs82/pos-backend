@@ -12,17 +12,34 @@ return new class extends Migration
      */
     public function up(): void
     {
-        DB::statement("
-            CREATE OR REPLACE VIEW v_trial_balance AS
-            SELECT a.id as account_id, a.code, a.name,
-                   SUM(p.debit)  AS total_debit,
-                   SUM(p.credit) AS total_credit,
-                   SUM(p.debit - p.credit) AS balance
-            FROM accounts a
-            LEFT JOIN journal_postings p ON p.account_id = a.id
-            GROUP BY a.id, a.code, a.name
-            ORDER BY a.code
-        ");
+        $driver = DB::getDriverName();
+        if ($driver === 'sqlite') {
+            DB::statement('DROP VIEW IF EXISTS v_trial_balance');
+            DB::statement("
+                CREATE VIEW v_trial_balance AS
+                SELECT a.id as account_id, a.code, a.name,
+                       SUM(p.debit)  AS total_debit,
+                       SUM(p.credit) AS total_credit,
+                       SUM(p.debit - p.credit) AS balance
+                FROM accounts a
+                LEFT JOIN journal_postings p ON p.account_id = a.id
+                GROUP BY a.id, a.code, a.name
+                ORDER BY a.code
+            ");
+        } else {
+
+            DB::statement("
+                CREATE OR REPLACE VIEW v_trial_balance AS
+                SELECT a.id as account_id, a.code, a.name,
+                       SUM(p.debit)  AS total_debit,
+                       SUM(p.credit) AS total_credit,
+                       SUM(p.debit - p.credit) AS balance
+                FROM accounts a
+                LEFT JOIN journal_postings p ON p.account_id = a.id
+                GROUP BY a.id, a.code, a.name
+                ORDER BY a.code
+            ");
+        }
     }
 
     /**

@@ -51,6 +51,7 @@ class AccountSeeder extends Seeder
             // Expenses
             ['code' => '5100', 'name' => 'Cost of Goods Sold', 'account_type_id' => $map('EXPENSE')],
             ['code' => '5205', 'name' => 'Purchase Price Variance', 'account_type_id' => $map('EXPENSE')],
+            ['code' => '5205', 'name' => 'Other Expenses', 'account_type_id' => $map('EXPENSE')],
         ];
 
         foreach ($accounts as $a) {
