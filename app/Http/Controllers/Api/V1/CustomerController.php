@@ -64,10 +64,22 @@ class CustomerController extends Controller
         }
 
         // ---- Fetch models for those IDs (preserve order) ----
-        $customers = Customer::query()
-            ->whereIn('id', $ids)
-            ->orderByRaw('FIELD(id, ' . implode(',', array_map('intval', $ids)) . ')')
-            ->get();
+        $customersQuery = Customer::query()->whereIn('id', $ids);
+
+        $driver = DB::getDriverName();
+
+        if ($driver === 'mysql') {
+            $customersQuery->orderByRaw('FIELD(id, ' . implode(',', array_map('intval', $ids)) . ')');
+        } else {
+            // SQLite/Postgres: ORDER BY CASE id WHEN ... THEN ... END
+            $case = 'CASE id ' . collect($ids)
+                ->map(fn($id, $i) => 'WHEN ' . (int)$id . ' THEN ' . (int)$i)
+                ->implode(' ') . ' END';
+
+            $customersQuery->orderByRaw($case);
+        }
+
+        $customers = $customersQuery->get();
 
         // ---- Optional: pull balances only for this page ----
         $balancesById = [];

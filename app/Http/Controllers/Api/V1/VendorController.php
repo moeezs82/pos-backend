@@ -60,10 +60,22 @@ class VendorController extends Controller
         }
 
         // ---- Fetch models for those IDs (preserve order) ----
-        $vendors = Vendor::query()
-            ->whereIn('id', $ids)
-            ->orderByRaw('FIELD(id, ' . implode(',', array_map('intval', $ids)) . ')')
-            ->get();
+        $vendorsQuery = Vendor::query()->whereIn('id', $ids);
+
+        $driver = DB::getDriverName();
+
+        if ($driver === 'mysql') {
+            $vendorsQuery->orderByRaw('FIELD(id, ' . implode(',', array_map('intval', $ids)) . ')');
+        } else {
+            // SQLite/Postgres: ORDER BY CASE id WHEN ... THEN ... END
+            $case = 'CASE id ' . collect($ids)
+                ->map(fn($id, $i) => 'WHEN ' . (int)$id . ' THEN ' . (int)$i)
+                ->implode(' ') . ' END';
+
+            $vendorsQuery->orderByRaw($case);
+        }
+
+        $vendors = $vendorsQuery->get();
 
         // ---- Optional: pull balances only for this page (AP from GL) ----
         $balancesById = [];
@@ -345,15 +357,15 @@ class VendorController extends Controller
         ]);
 
         return DB::transaction(function () use ($data, $vendorPaymentService, $vendor) {
-            
+
             $vpData = [
                 'vendor_id'  => $vendor->id,
                 'branch_id'  => $data['branch_id'] ?? null,
                 'paid_at'    => $data['paid_at'] ?? now()->toDateString(),
                 'method'     => $data['method'],
                 'amount'     => round($data['amount'], 2),
-                'reference'  => $data['reference'] ?? "Payment Send by ".auth()->user()->name,
-                'memo'  => $data['reference'] ?? "Payment Send by ".auth()->user()->name,
+                'reference'  => $data['reference'] ?? "Payment Send by " . auth()->user()->name,
+                'memo'  => $data['reference'] ?? "Payment Send by " . auth()->user()->name,
                 'note'       => $data['note'] ?? null,
                 'created_by' => auth()->id(),
             ];

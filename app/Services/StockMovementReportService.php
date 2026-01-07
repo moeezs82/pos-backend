@@ -62,7 +62,7 @@ class StockMovementReportService
         $branchIds  = $this->toIntArray($p['branch_id'] ?? null);
         $types      = $this->toStrArray($p['type'] ?? null);
 
-        $effDateExpr = "COALESCE(sm.created_at)";
+        $effDateExpr = "COALESCE(sm.created_at, sm.updated_at, '1970-01-01 00:00:00')";
 
         // ---------- Resolve inventory account id (for valuation)
         $inventoryAccountId = null;
