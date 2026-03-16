@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
+use App\Models\Product;
 use App\Models\Purchase;
 use App\Models\StockMovement;
 use App\Models\Vendor;
@@ -205,6 +206,10 @@ class PurchaseController extends Controller
                     'total'        => $lineTotal,
                 ]);
 
+                Product::where('id', $row['product_id'])->update([
+                    'price' => (float)$row['price'],
+                ]);
+
                 $toReceive = (int) $row['quantity'];
                 if ($toReceive > 0) {
                     $receiveRows[] = [
@@ -218,7 +223,8 @@ class PurchaseController extends Controller
                     productId: $item->product_id,
                     branchId: $p->branch_id,
                     receiveQty: $item->quantity,
-                    unitPrice: $item->price,
+                    // unitPrice: $item->price,
+                    unitPrice: $lineSubtotal/$item->quantity, // in case of line discount
                     ref: $p->invoice_no
                 );
             }
