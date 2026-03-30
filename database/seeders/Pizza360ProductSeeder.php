@@ -127,13 +127,75 @@ class Pizza360ProductSeeder extends Seeder
             // ['name' => 'Cold Drink 1ltr', 'price' => 140, 'cost_price' => 100],
             // ['name' => 'Cold Drink 1.5ltr', 'price' => 180, 'cost_price' => 130],
             // ['name' => 'Cold Drink Jumbo', 'price' => 240, 'cost_price' => 180],
+
+
+            // Deals
+            [
+                'name' => 'Royal Feast (1 Medium Pizza + 1 Large Pizza)',
+                'price' => 2099,
+                'cost_price' => null,
+            ],
+
+            [
+                'name' => 'Burger Treat (2 Chicken Burger)',
+                'price' => 499,
+                'cost_price' => null,
+            ],
+
+            [
+                'name' => 'Zinger Blast (3 Zinger Burger)',
+                'price' => 949,
+                'cost_price' => null,
+            ],
+
+            [
+                'name' => 'Crispy Bites (5 Wings + 5 Nuggets)',
+                'price' => 499,
+                'cost_price' => null,
+            ],
+
+            [
+                'name' => 'Pizza Combo (1 Small Pizza + 1 Medium Pizza)',
+                'price' => 1199,
+                'cost_price' => null,
+            ],
+
+            [
+                'name' => 'Broast Feast (2 Chest Broast + 1 Leg Broast)',
+                'price' => 1399,
+                'cost_price' => null,
+            ],
+
+            [
+                'name' => 'Roll Box (1 Mayo Roll + 1 Chatni Roll + 1 Zinger Roll)',
+                'price' => 699,
+                'cost_price' => null,
+            ],
+
+            [
+                'name' => 'Snack Box (1 Leg Broast + 6 Arabian Nuggets)',
+                'price' => 849,
+                'cost_price' => null,
+            ],
+
+            [
+                'name' => 'Pizza Party (4 Small Pizza)',
+                'price' => 1549,
+                'cost_price' => null,
+            ],
+
+            [
+                'name' => 'Pasta Box (1 White Sauce Pasta + 6 Nuggets)',
+                'price' => 649,
+                'cost_price' => null,
+            ],
         ];
 
         foreach ($products as $key => $p) {
             DB::transaction(function () use ($p, $key) {
                 // Save product
                 $data = array_merge($p, [
-                    'sku' => strtoupper(substr(preg_replace('/[^A-Za-z0-9]/', '', $p['name']), 0, 4)) . '-' . rand(1000,9999),
+                    'sku' => strtoupper(substr(preg_replace('/[^A-Za-z0-9]/', '', $p['name']), 0, 4)) . '-' . rand(1000, 9999),
                     'barcode' => null,
                     'description' => $p['name'] . " - Delicious pizza from Pizza360!",
                     'category_id' => null,

@@ -234,6 +234,33 @@ Route::prefix('v1')->group(function () {
             // Route::get('/day-details', [CashbookController::class, 'dailyDetails']);
         });
 
+        Route::post('/app-lock-status', function () {
+            $expiryDate = Carbon\Carbon::parse('2026-12-31 23:59:59');
+
+            $now = now();
+            $remainingDays = max(0, (int) ceil($now->diffInSeconds($expiryDate, false) / 86400));
+
+            $isLocked = $now->greaterThan($expiryDate);
+
+            // show reminder alert when 7 or fewer days are left and app is not locked yet
+            $showAlert = !$isLocked && $remainingDays <= 7;
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'is_locked' => $isLocked,
+                    'message' => $isLocked
+                        ? 'Your application access has expired. Please contact developer.'
+                        : ($showAlert
+                            ? "Your application will expire in {$remainingDays} day(s). Please contact developer."
+                            : 'Application is active.'),
+                    'pass_key' => 'moeez@subscription',
+                    'show_alert' => $showAlert,
+                    'remaining_days' => $remainingDays,
+                ],
+            ]);
+        })->withoutMiddleware('auth:sanctum');
+
         Route::prefix('/reports')->middleware('permission:view-reports')->group(function () {
             Route::prefix('/sales')->group(function () {
                 Route::get('/daily-summary', [SalesReportController::class, 'dailySummary']);
