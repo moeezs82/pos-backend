@@ -28,7 +28,7 @@ class AuthController extends Controller
         }
 
         // Create Sanctum Token
-        $token = $user->createToken('pos-token')->plainTextToken;
+        $token = $user->createToken('pos-token', ['*'], now()->addDays(6))->plainTextToken;
 
         $data = [
             'token' => $token,
