@@ -261,6 +261,32 @@ Route::prefix('v1')->group(function () {
             ]);
         })->withoutMiddleware('auth:sanctum');
 
+        Route::post('/printer-config', function (\Illuminate\Http\Request $request) {
+            // optional if later you want branch-wise config
+            $branchId = $request->input('branch_id');
+
+            // for now static values
+            $mainPrinterName = 'OneNote (Desktop) - Protected';
+            $kitchenPrinterName = 'SLK-TE201';
+            $isKitchenPrintEnabled = true;
+
+            $shopName = 'Pizza 360';
+            $shopAddress = 'Pizza 360 Miani Road Sukkur';
+            $shopPhone = '+923702183106';
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'main_printer_name' => $mainPrinterName,
+                    'kitchen_printer_name' => $kitchenPrinterName,
+                    'is_kitchen_print_enabled' => $isKitchenPrintEnabled,
+                    'shop_name' => $shopName,
+                    'shop_address' => $shopAddress,
+                    'shop_phone' => $shopPhone,
+                ],
+            ]);
+        })->withoutMiddleware('auth:sanctum');
+
         Route::prefix('/reports')->middleware('permission:view-reports')->group(function () {
             Route::prefix('/sales')->group(function () {
                 Route::get('/daily-summary', [SalesReportController::class, 'dailySummary']);

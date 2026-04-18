@@ -182,7 +182,7 @@ class SaleController extends Controller
 
             // create sale header
             $sale = Sale::create([
-                'invoice_no'  => 'INV-' . time(),
+                'invoice_no'  => $this->generateInvoiceNo(),
                 'customer_id' => $data['customer_id'] ?? null,
                 'vendor_id'   => $data['vendor_id'] ?? null,
                 'salesman_id' => $data['salesman_id'] ?? null,
@@ -449,5 +449,24 @@ class SaleController extends Controller
         }
 
         return ['ok' => true, 'message' => null];
+    }
+
+    private function generateInvoiceNo(): string
+    {
+        $datePart = now()->format('Ymd'); // 20260419
+        $prefix = "INV-{$datePart}-";
+
+        $lastInvoice = Sale::where('invoice_no', 'like', $prefix . '%')
+            ->orderByDesc('invoice_no')
+            ->value('invoice_no');
+
+        $nextNumber = 1;
+
+        if ($lastInvoice) {
+            $lastSequence = (int) substr($lastInvoice, strlen($prefix));
+            $nextNumber = $lastSequence + 1;
+        }
+
+        return $prefix . str_pad((string) $nextNumber, 3, '0', STR_PAD_LEFT);
     }
 }
