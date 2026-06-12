@@ -78,6 +78,25 @@ class ReturnAnalyticsService
             ->get()
             ->keyBy('d');
 
+        $inlineReturnsBase = DB::table('sales as s')
+            ->where('s.total', '<', 0)
+            ->when($from,       fn($q) => $q->where('s.created_at', '>=', $from->copy()->startOfDay()))
+            ->when($to,         fn($q) => $q->where('s.created_at', '<=', $to->copy()->endOfDay()))
+            ->when($branchId,   fn($q) => $q->where('s.branch_id', $branchId))
+            ->when($salesmanId, fn($q) => $q->where('s.salesman_id', $salesmanId))
+            ->when($customerId, fn($q) => $q->where('s.customer_id', $customerId));
+
+        $inlineReturnsPerDay = (clone $inlineReturnsBase)
+            ->selectRaw("
+                DATE(s.created_at) as d,
+                COUNT(s.id) as return_count,
+                COALESCE(SUM(ABS(s.total)), 0) as return_amount
+            ")
+            ->groupBy(DB::raw('DATE(s.created_at)'))
+            ->orderBy('d')
+            ->get()
+            ->keyBy('d');
+
         // -------------------------------
         // Per-day: quantity (from sale_return_items)
         // -------------------------------
@@ -101,6 +120,23 @@ class ReturnAnalyticsService
             ->get()
             ->keyBy('d');
 
+        $inlineQtyPerDay = DB::table('sale_items as si')
+            ->join('sales as s', 's.id', '=', 'si.sale_id')
+            ->where('si.quantity', '<', 0)
+            ->when($from,       fn($q) => $q->where('s.created_at', '>=', $from->copy()->startOfDay()))
+            ->when($to,         fn($q) => $q->where('s.created_at', '<=', $to->copy()->endOfDay()))
+            ->when($branchId,   fn($q) => $q->where('s.branch_id', $branchId))
+            ->when($salesmanId, fn($q) => $q->where('s.salesman_id', $salesmanId))
+            ->when($customerId, fn($q) => $q->where('s.customer_id', $customerId))
+            ->selectRaw("
+                DATE(s.created_at) as d,
+                COALESCE(SUM(ABS(si.quantity)), 0) as return_qty
+            ")
+            ->groupBy(DB::raw('DATE(s.created_at)'))
+            ->orderBy('d')
+            ->get()
+            ->keyBy('d');
+
         // -------------------------------
         // Per-day: sales (to compute return % of sales)
         // -------------------------------
@@ -114,7 +150,7 @@ class ReturnAnalyticsService
         $salesPerDay = (clone $salesBase)
             ->selectRaw("
                 DATE(s.created_at) as d,
-                COALESCE(SUM(s.total), 0) as sales_amount
+                COALESCE(SUM(CASE WHEN s.total > 0 THEN s.total ELSE 0 END), 0) as sales_amount
             ")
             ->groupBy(DB::raw('DATE(s.created_at)'))
             ->orderBy('d')
@@ -131,6 +167,7 @@ class ReturnAnalyticsService
             }
         } else {
             $dayKeys = collect($returnsPerDay->keys())
+                ->merge($inlineReturnsPerDay->keys())
                 ->merge($salesPerDay->keys())
                 ->unique()
                 ->sort()
@@ -154,12 +191,14 @@ class ReturnAnalyticsService
 
         foreach ($pagedKeys as $d) {
             $r  = $returnsPerDay->get($d);
+            $ir = $inlineReturnsPerDay->get($d);
             $q  = $qtyPerDay->get($d);
+            $iq = $inlineQtyPerDay->get($d);
             $sa = $salesPerDay->get($d);
 
-            $returnCount  = $r ? (int)$r->return_count        : 0;
-            $returnAmount = $r ? (float)$r->return_amount     : 0.0;
-            $returnQty    = $q ? (float)$q->return_qty        : 0.0;
+            $returnCount  = ($r ? (int)$r->return_count : 0) + ($ir ? (int)$ir->return_count : 0);
+            $returnAmount = ($r ? (float)$r->return_amount : 0.0) + ($ir ? (float)$ir->return_amount : 0.0);
+            $returnQty    = ($q ? (float)$q->return_qty : 0.0) + ($iq ? (float)$iq->return_qty : 0.0);
             $salesAmount  = $sa ? (float)$sa->sales_amount    : 0.0;
 
             $totReturnCount  += $returnCount;
@@ -211,7 +250,7 @@ class ReturnAnalyticsService
         // Top returned products
         // -------------------------------
         // Assumes sale_return_items.product_id exists; if not, join via sale_items table.
-        $byProduct = (clone $itemBase)
+        $formalByProduct = (clone $itemBase)
             ->join('products as p', 'p.id', '=', 'sri.product_id')
             ->selectRaw("
                 p.id   as product_id,
@@ -223,23 +262,50 @@ class ReturnAnalyticsService
             ->groupBy('p.id', 'p.name')
             ->orderByDesc('return_qty')
             ->limit(50)
-            ->get()
-            ->map(function ($r) {
+            ->get();
+
+        $inlineByProduct = DB::table('sale_items as si')
+            ->join('sales as s', 's.id', '=', 'si.sale_id')
+            ->join('products as p', 'p.id', '=', 'si.product_id')
+            ->where('si.quantity', '<', 0)
+            ->when($from,       fn($q) => $q->where('s.created_at', '>=', $from->copy()->startOfDay()))
+            ->when($to,         fn($q) => $q->where('s.created_at', '<=', $to->copy()->endOfDay()))
+            ->when($branchId,   fn($q) => $q->where('s.branch_id', $branchId))
+            ->when($salesmanId, fn($q) => $q->where('s.salesman_id', $salesmanId))
+            ->when($customerId, fn($q) => $q->where('s.customer_id', $customerId))
+            ->selectRaw("
+                p.id   as product_id,
+                p.name as product_name,
+                COUNT(DISTINCT si.sale_id)        as return_count,
+                COALESCE(SUM(ABS(si.quantity)), 0) as return_qty,
+                COALESCE(SUM(ABS(si.total)), 0)    as return_amount
+            ")
+            ->groupBy('p.id', 'p.name')
+            ->get();
+
+        $byProduct = $formalByProduct
+            ->concat($inlineByProduct)
+            ->groupBy('product_id')
+            ->map(function ($rows) {
+                $first = $rows->first();
                 return [
-                    'product_id'    => (int)$r->product_id,
-                    'product_name'  => $r->product_name,
-                    'return_count'  => (int)$r->return_count,
-                    'return_qty'    => (float)$r->return_qty,
-                    'return_amount' => round((float)$r->return_amount, 2),
+                    'product_id'    => (int)$first->product_id,
+                    'product_name'  => $first->product_name,
+                    'return_count'  => (int)$rows->sum('return_count'),
+                    'return_qty'    => (float)$rows->sum('return_qty'),
+                    'return_amount' => round((float)$rows->sum('return_amount'), 2),
                 ];
             })
+            ->sortByDesc('return_qty')
+            ->take(50)
+            ->values()
             ->all();
 
         // -------------------------------
         // Returns by reason
         // -------------------------------
         // Assumes sale_returns.reason column (string, nullable).
-        $byReason = (clone $baseReturns)
+        $formalByReason = (clone $baseReturns)
             ->selectRaw("
                 COALESCE(NULLIF(sr.reason, ''), '(No reason)') as reason,
                 COUNT(sr.id)               as return_count,
@@ -247,14 +313,30 @@ class ReturnAnalyticsService
             ")
             ->groupBy('reason')
             ->orderByDesc('return_amount')
-            ->get()
-            ->map(function ($r) {
+            ->get();
+
+        $inlineByReason = (clone $inlineReturnsBase)
+            ->selectRaw("
+                'Inline negative sale' as reason,
+                COUNT(s.id) as return_count,
+                COALESCE(SUM(ABS(s.total)), 0) as return_amount
+            ")
+            ->get();
+
+        $byReason = $formalByReason
+            ->concat($inlineByReason)
+            ->filter(fn($r) => (int)$r->return_count > 0 || (float)$r->return_amount > 0)
+            ->groupBy('reason')
+            ->map(function ($rows) {
+                $first = $rows->first();
                 return [
-                    'reason'        => $r->reason,
-                    'return_count'  => (int)$r->return_count,
-                    'return_amount' => round((float)$r->return_amount, 2),
+                    'reason'        => $first->reason,
+                    'return_count'  => (int)$rows->sum('return_count'),
+                    'return_amount' => round((float)$rows->sum('return_amount'), 2),
                 ];
             })
+            ->sortByDesc('return_amount')
+            ->values()
             ->all();
 
         return [

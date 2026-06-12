@@ -21,25 +21,47 @@ class SalePostingService
         // COGS                              DR cogs
         // Inventory                          CR cogs
 
-        $subtotalNet = $sale->subtotal - $sale->discount + $sale->delivery;
-        $revenue     = max($subtotalNet, 0);
-        $tax         = $sale->tax;
-        $total       = $sale->total;
+        $subtotalNet = round((float)$sale->subtotal - (float)$sale->discount + (float)$sale->delivery, 2);
+        $tax         = round((float)$sale->tax, 2);
+        $total       = round((float)$sale->total, 2);
 
         // Compute COGS from items (using avg cost snapshot)
         $cogs = 0;
         foreach ($sale->items as $it) {
-            $cogs += $it->line_cost;
+            $cogs += (float)$it->line_cost;
+        }
+        $cogs = round($cogs, 2);
+
+        $lines = [];
+
+        if ($total !== 0.0) {
+            $lines[] = $this->signedLine('1200', $total, Customer::class, $sale->customer_id); // AR
         }
 
-        $lines = [
-            ['account_code' => '1200', 'debit' => $total,   'credit' => 0, 'party_type' => Customer::class, 'party_id' => $sale->customer_id],            // AR
-            ['account_code' => '4000', 'debit' => 0,        'credit' => $revenue],     // Sales
-        ];
-        if ($tax > 0)  $lines[] = ['account_code' => '2100', 'debit' => 0, 'credit' => $tax]; // Tax payable
+        if ($subtotalNet > 0) {
+            $lines[] = ['account_code' => '4000', 'debit' => 0, 'credit' => $subtotalNet]; // Sales
+        } elseif ($subtotalNet < 0) {
+            $lines[] = [
+                'account_code' => config('accounts.sales_returns_account', '4000'),
+                'debit' => abs($subtotalNet),
+                'credit' => 0,
+            ]; // Sales return / revenue reversal
+        }
+
+        if ($tax !== 0.0) {
+            $lines[] = $this->signedLine('2100', -$tax); // Tax payable: positive tax is credit, negative tax is debit
+        }
+
         if ($cogs > 0) {
-            $lines[] = ['account_code' => '5100', 'debit' => $cogs, 'credit' => 0];     // COGS
-            $lines[] = ['account_code' => '1400', 'debit' => 0,   'credit' => $cogs];  // Inventory
+            $lines[] = ['account_code' => '5100', 'debit' => $cogs, 'credit' => 0]; // COGS
+            $lines[] = ['account_code' => '1400', 'debit' => 0, 'credit' => $cogs]; // Inventory
+        } elseif ($cogs < 0) {
+            $lines[] = ['account_code' => '1400', 'debit' => abs($cogs), 'credit' => 0]; // Returned inventory
+            $lines[] = ['account_code' => '5100', 'debit' => 0, 'credit' => abs($cogs)]; // Reverse COGS
+        }
+
+        if (empty($lines)) {
+            return;
         }
 
         $this->acc->post($sale->branch_id, "Sale #{$sale->invoice_no}", $sale, $lines, $sale->invoice_date, $sale->created_by);
@@ -61,7 +83,7 @@ class SalePostingService
             StockMovement::create([
                 'product_id' => $it->product_id,
                 'branch_id' => $sale->branch_id,
-                'type' => 'sale',
+                'type' => $it->quantity < 0 ? 'return' : 'sale',
                 'quantity' => -$it->quantity,
                 'reference' => $sale->invoice_no,
             ]);
@@ -72,5 +94,16 @@ class SalePostingService
             'cogs' => $cogs,
             'gross_profit' => $sale->total - $cogs,
         ]);
+    }
+
+    private function signedLine(string $accountCode, float $amount, $partyType = null, $partyId = null): array
+    {
+        return [
+            'account_code' => $accountCode,
+            'debit' => $amount > 0 ? abs($amount) : 0,
+            'credit' => $amount < 0 ? abs($amount) : 0,
+            'party_type' => $partyType,
+            'party_id' => $partyId,
+        ];
     }
 }

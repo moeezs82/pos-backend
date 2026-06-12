@@ -150,10 +150,10 @@ class SaleController extends Controller
             'items'       => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
             'items.*.discount_pct' => 'nullable|numeric',
-            'items.*.quantity'   => 'required|integer|min:1',
+            'items.*.quantity'   => 'required|integer|not_in:0',
             'items.*.price'      => 'required|numeric|min:0',
             'discount'    => 'nullable|numeric|min:0',
-            'tax'         => 'nullable|numeric|min:0',
+            'tax'         => 'nullable|numeric',
             'delivery'         => 'nullable|numeric|min:0',
             'payments'    => 'array',
             'meta' => 'nullable|array',
@@ -173,12 +173,12 @@ class SaleController extends Controller
                 $line  = $qty * $price;
                 $line -= $line * ($pct / 100);                // apply % off
 
-                return max(0, $line);                         // no negatives
+                return $line;
             });
             $discount = (float)($data['discount'] ?? 0);
             $tax      = (float)($data['tax'] ?? 0);
             $delivery      = (float)($data['delivery'] ?? 0);
-            $total    = max(0, round($subtotal - $discount + $tax + $delivery, 2));
+            $total    = round($subtotal - $discount + $tax + $delivery, 2);
 
             // create sale header
             $sale = Sale::create([
@@ -311,7 +311,7 @@ class SaleController extends Controller
     protected function updateSaleStatus(Sale $sale)
     {
         $paid = $sale->payments()->sum('amount');
-        if ($paid >= $sale->total) {
+        if ($sale->total > 0 && $paid >= $sale->total) {
             $sale->update(['status' => 'paid']);
         } elseif ($paid > 0) {
             $sale->update(['status' => 'partial']);

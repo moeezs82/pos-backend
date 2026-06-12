@@ -47,15 +47,33 @@ class SalesReportService
         $salesPerDay = (clone $salesQ)
             ->selectRaw("
             DATE(created_at) as d,
-            COALESCE(SUM(subtotal), 0) AS subtotal_sum,
             COALESCE(SUM(discount), 0) AS discount_sum,
             COALESCE(SUM(tax), 0)      AS tax_sum,
-            COALESCE(SUM(total), 0)    AS total_sum
+            COALESCE(SUM(delivery), 0) AS delivery_sum
         ")
             ->groupBy(DB::raw('DATE(created_at)'))
             ->orderBy('d')
             ->get()
             ->keyBy('d'); // map 'YYYY-MM-DD' => row
+
+        $saleItemsQ = DB::table('sale_items as si')
+            ->join('sales as s', 's.id', '=', 'si.sale_id')
+            ->when($from,       fn($q) => $q->where('s.created_at', '>=', $from->copy()->startOfDay()))
+            ->when($to,         fn($q) => $q->where('s.created_at', '<=', $to->copy()->endOfDay()))
+            ->when($branchId,   fn($q) => $q->where('s.branch_id', $branchId))
+            ->when($salesmanId, fn($q) => $q->where('s.salesman_id', $salesmanId))
+            ->when($customerId, fn($q) => $q->where('s.customer_id', $customerId));
+
+        $saleItemsPerDay = (clone $saleItemsQ)
+            ->selectRaw("
+            DATE(s.created_at) as d,
+            COALESCE(SUM(CASE WHEN si.total > 0 THEN si.total ELSE 0 END), 0) AS gross_items_total,
+            COALESCE(SUM(CASE WHEN si.total < 0 THEN ABS(si.total) ELSE 0 END), 0) AS inline_returns_total
+        ")
+            ->groupBy(DB::raw('DATE(s.created_at)'))
+            ->orderBy('d')
+            ->get()
+            ->keyBy('d');
 
         // ---------- RETURNS aggregated per day ----------
         $retQ = DB::table('sale_returns as sr')
@@ -82,6 +100,7 @@ class SalesReportService
             }
         } else {
             $dayKeys = collect($salesPerDay->keys())
+                ->merge($saleItemsPerDay->keys())
                 ->merge($returnsPerDay->keys())
                 ->unique()
                 ->sort()
@@ -102,14 +121,16 @@ class SalesReportService
         // Grand totals computed over ALL days
         foreach ($dayKeys as $d) {
             $s   = $salesPerDay->get($d);
+            $si  = $saleItemsPerDay->get($d);
             $r   = $returnsPerDay->get($d);
 
-            $gross = $s ? (float)$s->subtotal_sum : 0.0;
+            $gross = $si ? (float)$si->gross_items_total : 0.0;
             $disc  = $s ? (float)$s->discount_sum : 0.0;
             $tax   = $s ? (float)$s->tax_sum      : 0.0;
-            $total = $s ? (float)$s->total_sum    : 0.0;
-            $ret   = $r ? (float)$r->returns_total : 0.0;
-            $net   = $total - $ret;
+            $delivery = $s ? (float)$s->delivery_sum : 0.0;
+            $inlineRet = $si ? (float)$si->inline_returns_total : 0.0;
+            $ret   = ($r ? (float)$r->returns_total : 0.0) + $inlineRet;
+            $net   = $gross - $disc + $tax + $delivery - $ret;
 
             $grandGross += $gross;
             $grandDisc  += $disc;
@@ -121,14 +142,16 @@ class SalesReportService
         // Page rows + page totals only for current slice
         foreach ($pagedKeys as $d) {
             $s   = $salesPerDay->get($d);
+            $si  = $saleItemsPerDay->get($d);
             $r   = $returnsPerDay->get($d);
 
-            $gross = $s ? (float)$s->subtotal_sum : 0.0;
+            $gross = $si ? (float)$si->gross_items_total : 0.0;
             $disc  = $s ? (float)$s->discount_sum : 0.0;
             $tax   = $s ? (float)$s->tax_sum      : 0.0;
-            $total = $s ? (float)$s->total_sum    : 0.0;
-            $ret   = $r ? (float)$r->returns_total : 0.0;
-            $net   = $total - $ret;
+            $delivery = $s ? (float)$s->delivery_sum : 0.0;
+            $inlineRet = $si ? (float)$si->inline_returns_total : 0.0;
+            $ret   = ($r ? (float)$r->returns_total : 0.0) + $inlineRet;
+            $net   = $gross - $disc + $tax + $delivery - $ret;
 
             $rows[] = [
                 'date'      => $d,
@@ -244,9 +267,12 @@ class SalesReportService
             ->when($vendorId,   fn($q) => $q->where('p.vendor_id', $vendorId))
             ->selectRaw("
             si.product_id,
-            SUM(si.quantity)                                     as qty_pos,
-            SUM(si.total)                          as rev_pos,
-            SUM(si.line_cost)                    as cogs_pos
+            SUM(CASE WHEN si.quantity > 0 THEN si.quantity ELSE 0 END) as qty_pos,
+            SUM(CASE WHEN si.quantity > 0 THEN si.total ELSE 0 END) as rev_pos,
+            SUM(CASE WHEN si.quantity > 0 THEN si.line_cost ELSE 0 END) as cogs_pos,
+            SUM(CASE WHEN si.quantity < 0 THEN ABS(si.quantity) ELSE 0 END) as qty_neg,
+            SUM(CASE WHEN si.quantity < 0 THEN ABS(si.total) ELSE 0 END) as rev_neg,
+            SUM(CASE WHEN si.quantity < 0 THEN ABS(si.line_cost) ELSE 0 END) as cogs_neg
             ")
             ->groupBy('si.product_id');
 
@@ -290,9 +316,9 @@ class SalesReportService
                     COALESCE(pos.qty_pos,0)  as qty_pos,
                     COALESCE(pos.rev_pos,0)  as rev_pos,
                     COALESCE(pos.cogs_pos,0) as cogs_pos,
-                    COALESCE(ret.qty_neg,0)  as qty_neg,
-                    COALESCE(ret.rev_neg,0)  as rev_neg,
-                    COALESCE(ret.cogs_neg,0) as cogs_neg
+                    COALESCE(pos.qty_neg,0) + COALESCE(ret.qty_neg,0)  as qty_neg,
+                    COALESCE(pos.rev_neg,0) + COALESCE(ret.rev_neg,0)  as rev_neg,
+                    COALESCE(pos.cogs_neg,0) + COALESCE(ret.cogs_neg,0) as cogs_neg
                 ");
             } else {
                 $sub->leftJoin(
@@ -306,9 +332,9 @@ class SalesReportService
                     COALESCE(pos.qty_pos,0)  as qty_pos,
                     COALESCE(pos.rev_pos,0)  as rev_pos,
                     COALESCE(pos.cogs_pos,0) as cogs_pos,
-                    0 as qty_neg,
-                    0 as rev_neg,
-                    0 as cogs_neg
+                    COALESCE(pos.qty_neg,0)  as qty_neg,
+                    COALESCE(pos.rev_neg,0)  as rev_neg,
+                    COALESCE(pos.cogs_neg,0) as cogs_neg
                 ");
             }
         }, 'x')->selectRaw("
@@ -335,16 +361,25 @@ class SalesReportService
 
         // ---- Build refund stats for rate ----
         // sold qty (positive side only) and returned qty (across filtered date)
-        $posQtyQ = DB::table('sale_items as si')
+        $posQtyBase = DB::table('sale_items as si')
             ->join('sales as s', 's.id', '=', 'si.sale_id')
             ->when($from,       fn($q) => $q->where('si.created_at', '>=', $from->copy()->startOfDay()))
             ->when($to,         fn($q) => $q->where('si.created_at', '<=', $to->copy()->endOfDay()))
             ->when($branchId,   fn($q) => $q->where('s.branch_id', $branchId))
             ->when($salesmanId, fn($q) => $q->where('s.salesman_id', $salesmanId))
             ->when($customerId, fn($q) => $q->where('s.customer_id', $customerId));
-        $soldQtyIndex = $posQtyQ->selectRaw('si.product_id, SUM(si.quantity) as sq')->groupBy('si.product_id')->pluck('sq', 'si.product_id');
 
-        $refundIndex = collect();
+        $soldQtyIndex = (clone $posQtyBase)
+            ->selectRaw('si.product_id, SUM(CASE WHEN si.quantity > 0 THEN si.quantity ELSE 0 END) as sq')
+            ->groupBy('si.product_id')
+            ->pluck('sq', 'si.product_id');
+
+        $inlineRefundIndex = (clone $posQtyBase)
+            ->selectRaw('si.product_id, SUM(CASE WHEN si.quantity < 0 THEN ABS(si.quantity) ELSE 0 END) as rq')
+            ->groupBy('si.product_id')
+            ->pluck('rq', 'si.product_id');
+
+        $refundIndex = collect($inlineRefundIndex);
         if ($hasReturnItems) {
             $retQtyQ = DB::table('sale_return_items as sri')
                 ->join('sale_returns as sr', 'sr.id', '=', 'sri.sale_return_id')
@@ -354,7 +389,14 @@ class SalesReportService
                 ->when($branchId,   fn($q) => $q->where('s.branch_id', $branchId))
                 ->when($salesmanId, fn($q) => $q->where('s.salesman_id', $salesmanId))
                 ->when($customerId, fn($q) => $q->where('s.customer_id', $customerId));
-            $refundIndex = $retQtyQ->selectRaw('sri.product_id, SUM(sri.quantity) as rq')->groupBy('sri.product_id')->pluck('rq', 'sri.product_id');
+            $formalRefundIndex = $retQtyQ
+                ->selectRaw('sri.product_id, SUM(sri.quantity) as rq')
+                ->groupBy('sri.product_id')
+                ->pluck('rq', 'sri.product_id');
+
+            foreach ($formalRefundIndex as $pid => $qty) {
+                $refundIndex[$pid] = (float)($refundIndex[$pid] ?? 0) + (float)$qty;
+            }
         }
 
         // ---- Bulk-load product name/sku for current page ----

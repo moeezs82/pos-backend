@@ -266,7 +266,7 @@ Route::prefix('v1')->group(function () {
             $branchId = $request->input('branch_id');
 
             // for now static values
-            $mainPrinterName = 'OneNote (Desktop) - Protected';
+            $mainPrinterName = 'Microsoft Print to PDF';
             $kitchenPrinterName = 'SLK-TE201';
             $isKitchenPrintEnabled = true;
 

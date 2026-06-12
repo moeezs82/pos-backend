@@ -63,7 +63,7 @@ class CashbookService
         $expenseTypeId = (int) DB::table('account_types')->where('code', 'EXPENSE')->value('id');
 
         // ----- Effective date expression (align with your other modules)
-        $effDateExpr = "COALESCE(jp.created_at, je.entry_date, je.created_at)";
+        $effDateExpr = "COALESCE(je.entry_date, je.created_at, jp.created_at)";
 
         // ===========================
         // 1) Opening balance (before from)
