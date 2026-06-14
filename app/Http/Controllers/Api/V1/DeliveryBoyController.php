@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Services\BranchContextService;
 use App\Services\BranchRoleService;
 use App\Services\DeliveryBoyCashService;
+use App\Services\DeliveryBoyLedgerService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -232,11 +233,12 @@ class DeliveryBoyController extends Controller
      * POST /delivery-boys/{id}/received
      * Body: amount
      */
-    public function storeReceived(Request $request, int $id, DeliveryBoyCashService $cashService, BranchContextService $branches)
+    public function storeReceived(Request $request, int $id, DeliveryBoyCashService $cashService, BranchContextService $branches, DeliveryBoyLedgerService $deliveryLedger)
     {
         $user = User::query()->findOrFail($id);
         $data = $request->validate([
             'amount' => ['required', 'numeric', 'gt:0'],
+            'method' => ['nullable', 'string', 'in:cash,bank,card,wallet'],
             'branch_id' => ['nullable', 'exists:branches,id'],
         ]);
         $branchId = $branches->requireBranchId($request);
@@ -247,6 +249,8 @@ class DeliveryBoyController extends Controller
             'branch_id' => $branchId,
             'amount' => round((float) $data['amount'], 2),
         ]);
+
+        $deliveryLedger->postDeliveryBoyReceived($row, $data['method'] ?? 'cash');
 
         return ApiResponse::success([
             'received' => [

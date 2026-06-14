@@ -357,7 +357,19 @@ class SaleController extends Controller
         if (!empty($data['delivery_boy_id'])) {
             $this->assertUserCanBeAssignedToBranch($request, $branches, (int) $data['delivery_boy_id'], (int) $sale->branch_id, 'delivery');
         }
-        $sale->update($data);
+
+        $oldDeliveryBoyId = $sale->delivery_boy_id ? (int) $sale->delivery_boy_id : null;
+        $newDeliveryBoyId = !empty($data['delivery_boy_id']) ? (int) $data['delivery_boy_id'] : null;
+
+        $sale->update(['delivery_boy_id' => $newDeliveryBoyId]);
+
+        app(\App\Services\DeliveryBoyLedgerService::class)->postSaleDeliveryBoyChange(
+            $sale->fresh(),
+            $oldDeliveryBoyId,
+            $newDeliveryBoyId,
+            now()->toDateString()
+        );
+
         return ApiResponse::success($sale->fresh(), 'Delivery boy updated successfully');
     }
 

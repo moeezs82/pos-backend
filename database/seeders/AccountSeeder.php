@@ -32,6 +32,7 @@ class AccountSeeder extends Seeder
             ['code' => '1010', 'name' => 'Bank',         'account_type_id' => $map('ASSET')],
             // Add the canonical AR account your services reference:
             ['code' => '1200', 'name' => 'Accounts Receivable (legacy)', 'account_type_id' => $map('ASSET')],
+            ['code' => '1210', 'name' => 'Delivery Boy Cash in Transit', 'account_type_id' => $map('ASSET')],
             ['code' => '1400', 'name' => 'Inventory',    'account_type_id' => $map('ASSET')],
             ['code' => '2105', 'name' => 'Input VAT (Recoverable)', 'account_type_id' => $map('ASSET')],
 

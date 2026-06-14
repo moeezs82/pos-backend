@@ -80,6 +80,8 @@ class SaleAdjustmentService
             entryDate: $date,
             userId:    auth()->id()
         );
+
+        app(DeliveryBoyLedgerService::class)->postSaleTotalAdjustment($s, $deltaTot, $date);
     }
 
     private function line(string $accountCode, float $amount, $partyType=null, $partyId=null): array

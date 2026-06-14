@@ -275,6 +275,15 @@ class CloseFinancialYear extends Command
                 continue;
             }
 
+            /*
+             * The target database is migrated before copying data. Some later
+             * migrations may seed required setup rows (for example ASSET in
+             * account_types or Delivery Boy Cash in Transit in accounts). Since
+             * this command preserves source IDs exactly, those migration-created
+             * rows must be removed before source master data is inserted.
+             */
+            $this->clearTargetTable($target, $table);
+
             $query->orderBy($this->orderColumn($table))->chunk(500, function ($rows) use ($target, $table, $copyColumns, &$count) {
                 $payload = [];
 
@@ -289,6 +298,16 @@ class CloseFinancialYear extends Command
             });
 
             $this->line('  '.$table.': '.$count);
+        }
+    }
+
+    private function clearTargetTable(ConnectionInterface $target, string $table): void
+    {
+        try {
+            $target->table($table)->delete();
+        } catch (\Throwable) {
+            // If a table cannot be cleared for an unexpected schema-specific reason,
+            // continue to normal insert so the original database error remains visible.
         }
     }
 

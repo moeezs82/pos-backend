@@ -193,30 +193,32 @@ class UserController extends Controller
         return ApiResponse::success($branchRoles->publicUser($user));
     }
 
-    public function deliveryBoyCashSummary(Request $request, User $user)
+    public function deliveryBoyCashSummary(Request $request, User $user, DeliveryBoyCashService $deliveryCashService)
     {
         $from = $request->date('from');
         $to = $request->date('to');
-
-        $ordersQuery = $user->deliveryOrders()
-            ->when($from, fn ($q) => $q->whereDate('created_at', '>=', $from))
-            ->when($to, fn ($q) => $q->whereDate('created_at', '<=', $to));
-
-        $receivedQuery = $user->deliveryBoyReceived()
-            ->when($from, fn ($q) => $q->whereDate('created_at', '>=', $from))
-            ->when($to, fn ($q) => $q->whereDate('created_at', '<=', $to));
-
-        $ordersTotal = $ordersQuery->sum('total');
-        $receivedTotal = $receivedQuery->sum('amount');
+        $summary = $deliveryCashService->summaryForUser($user, $deliveryCashService->filtersFromRequest($request));
 
         return ApiResponse::success([
             'delivery_boy' => ['id' => $user->id, 'name' => $user->name],
             'filters' => ['from' => $from?->toDateString(), 'to' => $to?->toDateString()],
-            'orders_total' => (float) $ordersTotal,
-            'received_total' => (float) $receivedTotal,
-            'balance' => (float) ($ordersTotal - $receivedTotal),
-            'orders' => $ordersQuery->latest()->paginate($request->integer('orders_per_page', 20)),
-            'received' => $receivedQuery->latest()->paginate($request->integer('received_per_page', 20)),
+            'orders_count' => $summary['orders_count'],
+            'orders_total' => $summary['orders_total'],
+            'received_count' => $summary['received_count'],
+            'received_total' => $summary['received_total'],
+            'balance' => $summary['balance'],
+            'last_order_at' => $summary['last_order_at'],
+            'last_received_at' => $summary['last_received_at'],
+            'orders' => $user->deliveryOrders()
+                ->when($from, fn ($q) => $q->whereDate('created_at', '>=', $from))
+                ->when($to, fn ($q) => $q->whereDate('created_at', '<=', $to))
+                ->latest()
+                ->paginate($request->integer('orders_per_page', 20)),
+            'received' => $user->deliveryBoyReceived()
+                ->when($from, fn ($q) => $q->whereDate('created_at', '>=', $from))
+                ->when($to, fn ($q) => $q->whereDate('created_at', '<=', $to))
+                ->latest()
+                ->paginate($request->integer('received_per_page', 20)),
         ]);
     }
 

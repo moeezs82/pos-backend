@@ -3,18 +3,20 @@
 namespace App\Services;
 
 use App\Models\User;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 class DeliveryBoyCashService
 {
     /**
-     * Build delivery cash summaries for many users in only two aggregate queries.
+     * Build delivery cash summaries from the accounting ledger.
      *
-     * Balance meaning:
-     * assigned delivery order total - cash already received from delivery boy.
-     * A positive balance means the delivery boy still owes money to the shop.
+     * Debit  on account 1210 = delivery boy owes / cash in transit.
+     * Credit on account 1210 = delivery boy/customer cash received.
+     * Balance = debit - credit.
+     *
+     * This survives financial-year close because opening journal postings keep
+     * party_type=App\Models\User and party_id=delivery_boy_id.
      *
      * Supported filters: from, to, branch_id.
      */
@@ -30,60 +32,48 @@ class DeliveryBoyCashService
             return [];
         }
 
-        $ordersQuery = DB::table('sales')
-            ->when($this->hasColumn('sales', 'deleted_at'), fn ($q) => $q->whereNull('deleted_at'))
-            ->whereNotIn('status', ['cancelled'])
-            ->whereIn('delivery_boy_id', $ids->all());
+        $accountId = $this->deliveryBoyAccountId();
+        if (!$accountId || !$this->hasLedgerTables()) {
+            return $this->emptySummaries($ids->all(), (int) ($filters['branch_id'] ?? 0));
+        }
 
-        $this->applyCommonFilters($ordersQuery, 'created_at', $filters);
+        $query = DB::table('journal_postings as jp')
+            ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
+            ->where('jp.account_id', $accountId)
+            ->where('jp.party_type', User::class)
+            ->whereIn('jp.party_id', $ids->all());
 
         $branchId = (int) ($filters['branch_id'] ?? 0);
         if ($branchId > 0) {
-            $ordersQuery->where('branch_id', $branchId);
+            $query->where('je.branch_id', $branchId);
         }
 
-        $ordersByUser = (clone $ordersQuery)
-            ->selectRaw('delivery_boy_id AS user_id')
-            ->selectRaw('COUNT(*) AS orders_count')
-            ->selectRaw('COALESCE(SUM(total), 0) AS orders_total')
-            ->selectRaw('MAX(created_at) AS last_order_at')
-            ->groupBy('delivery_boy_id')
+        $this->applyCommonFilters($query, 'je.entry_date', $filters);
+
+        $rows = (clone $query)
+            ->selectRaw('jp.party_id AS user_id')
+            ->selectRaw('SUM(CASE WHEN COALESCE(jp.debit, 0) > 0 THEN 1 ELSE 0 END) AS orders_count')
+            ->selectRaw('SUM(CASE WHEN COALESCE(jp.credit, 0) > 0 THEN 1 ELSE 0 END) AS received_count')
+            ->selectRaw('COALESCE(SUM(jp.debit), 0) AS orders_total')
+            ->selectRaw('COALESCE(SUM(jp.credit), 0) AS received_total')
+            ->selectRaw('COALESCE(SUM(jp.debit - jp.credit), 0) AS balance')
+            ->selectRaw('MAX(CASE WHEN COALESCE(jp.debit, 0) > 0 THEN je.entry_date ELSE NULL END) AS last_order_at')
+            ->selectRaw('MAX(CASE WHEN COALESCE(jp.credit, 0) > 0 THEN je.entry_date ELSE NULL END) AS last_received_at')
+            ->groupBy('jp.party_id')
             ->get()
             ->keyBy(fn ($row) => (int) $row->user_id);
 
-        $receivedQuery = DB::table('delivery_boy_received')
-            ->whereIn('user_id', $ids->all());
-
-        if ($branchId > 0 && $this->hasColumn('delivery_boy_received', 'branch_id')) {
-            $receivedQuery->where('branch_id', $branchId);
-        }
-
-        $this->applyCommonFilters($receivedQuery, 'created_at', $filters);
-
-        $receivedByUser = (clone $receivedQuery)
-            ->selectRaw('user_id')
-            ->selectRaw('COUNT(*) AS received_count')
-            ->selectRaw('COALESCE(SUM(amount), 0) AS received_total')
-            ->selectRaw('MAX(created_at) AS last_received_at')
-            ->groupBy('user_id')
-            ->get()
-            ->keyBy(fn ($row) => (int) $row->user_id);
-
-        return $ids->mapWithKeys(function (int $userId) use ($ordersByUser, $receivedByUser, $branchId) {
-            $orders = $ordersByUser->get($userId);
-            $received = $receivedByUser->get($userId);
-
-            $ordersTotal = (float) ($orders->orders_total ?? 0);
-            $receivedTotal = (float) ($received->received_total ?? 0);
+        return $ids->mapWithKeys(function (int $userId) use ($rows, $branchId) {
+            $row = $rows->get($userId);
 
             return [$userId => [
-                'orders_count' => (int) ($orders->orders_count ?? 0),
-                'orders_total' => round($ordersTotal, 2),
-                'received_count' => (int) ($received->received_count ?? 0),
-                'received_total' => round($receivedTotal, 2),
-                'balance' => round($ordersTotal - $receivedTotal, 2),
-                'last_order_at' => $orders->last_order_at ?? null,
-                'last_received_at' => $received->last_received_at ?? null,
+                'orders_count' => (int) ($row->orders_count ?? 0),
+                'orders_total' => round((float) ($row->orders_total ?? 0), 2),
+                'received_count' => (int) ($row->received_count ?? 0),
+                'received_total' => round((float) ($row->received_total ?? 0), 2),
+                'balance' => round((float) ($row->balance ?? 0), 2),
+                'last_order_at' => $row->last_order_at ?? null,
+                'last_received_at' => $row->last_received_at ?? null,
                 'branch_id' => $branchId > 0 ? $branchId : null,
             ]];
         })->all();
@@ -114,6 +104,17 @@ class DeliveryBoyCashService
         ];
     }
 
+    public function deliveryBoyAccountId(): ?int
+    {
+        if (!Schema::hasTable('accounts')) {
+            return null;
+        }
+
+        $id = DB::table('accounts')->where('code', DeliveryBoyLedgerService::ACCOUNT_CODE)->value('id');
+
+        return $id ? (int) $id : null;
+    }
+
     private function applyCommonFilters($query, string $dateColumn, array $filters): void
     {
         if (!empty($filters['from'])) {
@@ -125,12 +126,25 @@ class DeliveryBoyCashService
         }
     }
 
-    private function hasColumn(string $table, string $column): bool
+    private function hasLedgerTables(): bool
     {
-        try {
-            return Schema::hasColumn($table, $column);
-        } catch (\Throwable $e) {
-            return false;
-        }
+        return Schema::hasTable('journal_entries')
+            && Schema::hasTable('journal_postings')
+            && Schema::hasColumn('journal_postings', 'party_type')
+            && Schema::hasColumn('journal_postings', 'party_id');
+    }
+
+    private function emptySummaries(array $ids, int $branchId): array
+    {
+        return collect($ids)->mapWithKeys(fn (int $userId) => [$userId => [
+            'orders_count' => 0,
+            'orders_total' => 0.0,
+            'received_count' => 0,
+            'received_total' => 0.0,
+            'balance' => 0.0,
+            'last_order_at' => null,
+            'last_received_at' => null,
+            'branch_id' => $branchId > 0 ? $branchId : null,
+        ]])->all();
     }
 }

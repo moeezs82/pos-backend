@@ -373,27 +373,40 @@ class EnterpriseReportService
 
     private function deliveryBoyCash(array $f, bool $export): array
     {
-        $paidSub = DB::table('receipts')->select('sale_id')->selectRaw('COALESCE(SUM(amount),0) as paid')->groupBy('sale_id');
-        $q = DB::table('sales as s')
-            ->leftJoin('users as u', 'u.id', '=', 's.delivery_boy_id')
-            ->leftJoinSub($paidSub, 'rp', 'rp.sale_id', '=', 's.id')
-            ->whereNull('s.deleted_at')
-            ->whereNotNull('s.delivery_boy_id');
-        $this->applyDateRange($q, 's.created_at', $f);
-        $this->applySalesFilters($q, $f, 's');
-        $this->applyWhere($q, 's.delivery_boy_id', $f['delivery_boy_id']);
+        $accountId = DB::table('accounts')->where('code', \App\Services\DeliveryBoyLedgerService::ACCOUNT_CODE)->value('id');
+
+        if (!$accountId) {
+            return $this->report('Delivery Boy Cash Report', [
+                ['key' => 'delivery_boy_id', 'label' => 'Delivery Boy ID'], ['key' => 'delivery_boy', 'label' => 'Delivery Boy'],
+                ['key' => 'orders', 'label' => 'Ledger Debits'], ['key' => 'orders_total', 'label' => 'Amount To Receive'],
+                ['key' => 'collected', 'label' => 'Received'], ['key' => 'pending', 'label' => 'Pending'],
+            ], [], ['orders' => 0, 'orders_total' => 0.0, 'collected' => 0.0, 'pending' => 0.0], $f, $export);
+        }
+
+        $q = DB::table('journal_postings as jp')
+            ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
+            ->join('users as u', 'u.id', '=', 'jp.party_id')
+            ->where('jp.account_id', (int) $accountId)
+            ->where('jp.party_type', \App\Models\User::class);
+
+        $this->applyDateRange($q, 'je.entry_date', $f);
+        $this->applyWhere($q, 'je.branch_id', $f['branch_id']);
+        $this->applyWhere($q, 'jp.party_id', $f['delivery_boy_id']);
+
         $q->selectRaw('u.id as delivery_boy_id, u.name as delivery_boy')
-            ->selectRaw('COUNT(*) as orders')
-            ->selectRaw('COALESCE(SUM(s.total),0) as orders_total')
-            ->selectRaw('COALESCE(SUM(rp.paid),0) as collected')
-            ->selectRaw('COALESCE(SUM(s.total - COALESCE(rp.paid,0)),0) as pending')
+            ->selectRaw('SUM(CASE WHEN COALESCE(jp.debit,0) > 0 THEN 1 ELSE 0 END) as orders')
+            ->selectRaw('COALESCE(SUM(jp.debit),0) as orders_total')
+            ->selectRaw('COALESCE(SUM(jp.credit),0) as collected')
+            ->selectRaw('COALESCE(SUM(jp.debit - jp.credit),0) as pending')
             ->groupBy('u.id', 'u.name')
+            ->havingRaw('ABS(pending) >= 0.005')
             ->orderBy('pending', 'desc');
+
         $rows = $q->get()->map(fn($r) => $this->roundRow((array)$r))->all();
         return $this->report('Delivery Boy Cash Report', [
             ['key' => 'delivery_boy_id', 'label' => 'Delivery Boy ID'], ['key' => 'delivery_boy', 'label' => 'Delivery Boy'],
-            ['key' => 'orders', 'label' => 'Orders'], ['key' => 'orders_total', 'label' => 'Orders Total'],
-            ['key' => 'collected', 'label' => 'Collected'], ['key' => 'pending', 'label' => 'Pending'],
+            ['key' => 'orders', 'label' => 'Ledger Debits'], ['key' => 'orders_total', 'label' => 'Amount To Receive'],
+            ['key' => 'collected', 'label' => 'Received'], ['key' => 'pending', 'label' => 'Pending'],
         ], $rows, $this->sumTotals($rows, ['orders', 'orders_total', 'collected', 'pending']), $f, $export);
     }
 

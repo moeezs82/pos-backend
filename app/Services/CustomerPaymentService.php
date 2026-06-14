@@ -4,6 +4,8 @@ namespace App\Services;
 
 use App\Models\Customer;
 use App\Models\Receipt;
+use App\Models\Sale;
+use App\Models\User;
 use App\Models\ReceiptAllocation;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
@@ -65,8 +67,9 @@ class CustomerPaymentService
         $cashAccount = $this->cashSync->mapMethodToAccount($r->method, $r->branch_id);
 
         if ($isPostAccount) {
-            // Use account code for AR (choose consistent code with your chart)
-            // I use '1200' as Accounts Receivable (adjust if your chart differs)
+            // Customer receipt always remains customer flow, even when the sale has
+            // a delivery boy. Delivery-boy custody is posted separately from sale
+            // assignment / delivery-boy-received documents.
             $this->accounting->post(
                 branchId: $r->branch_id,
                 memo: $data['memo']??"Customer receipt #{$r->id}",

@@ -65,6 +65,8 @@ class SalePostingService
         }
 
         $this->acc->post($sale->branch_id, "Sale #{$sale->invoice_no}", $sale, $lines, $sale->invoice_date, $sale->created_by);
+
+        app(DeliveryBoyLedgerService::class)->postSaleAssignment($sale);
     }
 
     public function deductStockAndStampCosts(Sale $sale): void
