@@ -7,19 +7,18 @@ use App\Http\Response\ApiResponse;
 use App\Models\ProductStock;
 use App\Models\StockMovement;
 use App\Services\AccountingService;
+use App\Services\BranchContextService;
+use App\Services\ProductBranchService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class StockController extends Controller
 {
     // View stock per branch
-    public function index(Request $request)
+    public function index(Request $request, BranchContextService $branches)
     {
         $query = ProductStock::with(['product', 'branch']);
-
-        if ($request->filled('branch_id')) {
-            $query->where('branch_id', $request->branch_id);
-        }
+        $branches->applyToQuery($query, $request, 'branch_id');
 
         if ($request->filled('product_id')) {
             $query->where('product_id', $request->product_id);
@@ -30,7 +29,7 @@ class StockController extends Controller
     }
 
     // Adjust stock (increase/decrease manually)
-    public function adjust(Request $request, AccountingService $accounting)
+    public function adjust(Request $request, AccountingService $accounting, BranchContextService $branches, ProductBranchService $productBranches)
     {
         $data = $request->validate([
             'product_id' => 'required|exists:products,id',
@@ -39,7 +38,8 @@ class StockController extends Controller
             'reason'     => 'nullable|string'
         ]);
 
-        $branchId  = $data['branch_id'] ?? null;
+        $branchId  = $branches->requireBranchId($request);
+        $productBranches->assertProductsBelongToBranch([(int) $data['product_id']], $branchId);
 
         $stock = ProductStock::firstOrCreate(
                 ['product_id' => $data['product_id'], 'branch_id' => $branchId],
@@ -118,7 +118,7 @@ class StockController extends Controller
     }
 
     // Transfer stock between branches
-    public function transfer(Request $request)
+    public function transfer(Request $request, BranchContextService $branches, ProductBranchService $productBranches)
     {
         $data = $request->validate([
             'product_id'   => 'required|exists:products,id',
@@ -127,6 +127,12 @@ class StockController extends Controller
             'quantity'     => 'required|integer|min:1',
             'reference'    => 'nullable|string', // e.g., transfer voucher number
         ]);
+
+        $activeBranchId = $branches->requireBranchId($request);
+        if ((int) $data['from_branch'] !== $activeBranchId) {
+            return ApiResponse::error('Please switch to the source branch before transferring stock.', 422);
+        }
+        $productBranches->assertProductsBelongToBranch([(int) $data['product_id']], $activeBranchId);
 
         DB::beginTransaction();
 

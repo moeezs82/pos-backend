@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
+use App\Services\BranchContextService;
 use App\Services\SalesReportService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -17,37 +18,52 @@ class SalesReportController extends Controller
         return $v ? Carbon::parse($v) : null;
     }
 
-    public function dailySummary(Request $r)
+    public function dailySummary(Request $r, BranchContextService $branches)
     {
         $res = $this->svc->dailySummaryByDay(
             $this->dt($r->query('from')),
             $this->dt($r->query('to')),
-            // $r->integer('branch_id'),
-            null,
+            $branches->effectiveBranchId($r),
             $r->integer('salesman_id'),
             $r->integer('customer_id'),
             $r->integer('page'),
             $r->integer('per_page')
         );
-        return ApiResponse::success($res);
+
+        return ApiResponse::success($this->withoutBranchData($res));
     }
 
-    public function topBottom(Request $r)
+    public function topBottom(Request $r, BranchContextService $branches)
     {
         $res = $this->svc->topBottomProducts(
             $r->filled('from') ? Carbon::parse($r->query('from')) : null,
-            $r->filled('to')   ? Carbon::parse($r->query('to'))   : null,
-            // $r->integer('branch_id'),
-            null,
+            $r->filled('to') ? Carbon::parse($r->query('to')) : null,
+            $branches->effectiveBranchId($r),
             $r->integer('salesman_id'),
             $r->integer('customer_id'),
             $r->integer('category_id'),
             $r->integer('vendor_id'),
             $r->query('sort_by', 'revenue'),
             $r->query('direction', 'desc'),
-            (int)$r->query('page', 1),
-            (int)$r->query('per_page', 20)
+            (int) $r->query('page', 1),
+            (int) $r->query('per_page', 20)
         );
-        return ApiResponse::success($res);
+
+        return ApiResponse::success($this->withoutBranchData($res));
+    }
+
+    private function withoutBranchData(mixed $value): mixed
+    {
+        if (is_array($value)) {
+            foreach (['branch', 'branch_id', 'branch_name'] as $key) {
+                unset($value[$key]);
+            }
+
+            foreach ($value as $key => $child) {
+                $value[$key] = $this->withoutBranchData($child);
+            }
+        }
+
+        return $value;
     }
 }

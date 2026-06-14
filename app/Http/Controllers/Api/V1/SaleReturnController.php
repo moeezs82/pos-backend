@@ -14,6 +14,7 @@ use App\Models\StockMovement;
 use App\Services\AccountingService;
 use App\Services\CashSyncService;
 use App\Services\CustomerPaymentService;
+use App\Services\BranchContextService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -21,14 +22,12 @@ use Illuminate\Validation\ValidationException;
 
 class SaleReturnController extends Controller
 {
-    public function index(Request $request)
+    public function index(Request $request, BranchContextService $branches)
     {
         $query = SaleReturn::with(['sale:id,invoice_no,customer_id,branch_id', 'sale.customer:id,first_name,last_name', 'sale.branch:id,name'])
             ->withSum('refunds as refund_total', 'amount');
 
-        // if ($request->branch_id) {
-        //     $query->where('branch_id', $request->branch_id);
-        // }
+        $branches->applyToQuery($query, $request, 'branch_id');
 
         if ($request->customer_id) {
             $query->where('customer_id', $request->customer_id);
@@ -56,7 +55,7 @@ class SaleReturnController extends Controller
         return ApiResponse::success($query->orderByDesc('id')->paginate(15));
     }
 
-    public function show($id)
+    public function show(Request $request, $id, BranchContextService $branches)
     {
         $return = SaleReturn::with([
             'sale:id,invoice_no,customer_id,branch_id,subtotal,total',
@@ -65,6 +64,8 @@ class SaleReturnController extends Controller
             'items.product:id,name,sku',
             'refunds:id,sale_return_id,amount'
         ])->findOrFail($id);
+
+        $branches->assertCanAccessBranch($request, $return->branch_id ? (int) $return->branch_id : null);
 
         return ApiResponse::success($return);
     }
@@ -330,7 +331,7 @@ class SaleReturnController extends Controller
     //     return $refunded + $amount;
     // }
 
-    public function store(Request $request)
+    public function store(Request $request, BranchContextService $branches)
     {
         $data = $request->validate([
             'sale_id'                  => ['required', 'integer', 'exists:sales,id'],
@@ -347,8 +348,9 @@ class SaleReturnController extends Controller
         ]);
 
         $sale = Sale::where('id', $data['sale_id'])->lockForUpdate()->firstOrFail();
+        $branches->assertCanAccessBranch($request, $sale->branch_id ? (int) $sale->branch_id : null);
 
-        return DB::transaction(function () use ($data, $sale, $request) {
+        return DB::transaction(function () use ($data, $sale, $request, $branches) {
             // fetch requested items once
             $requestedIds = collect($data['items'])->pluck('sale_item_id')->unique()->values();
             $saleItems = SaleItem::query()
@@ -449,6 +451,7 @@ class SaleReturnController extends Controller
             // approve now? delegate to same approve to keep a single source of truth
             if ((bool)($data['approve_now'] ?? false)) {
                 $fake = new Request([
+                    'branch_id' => $return->branch_id,
                     'refund' => [
                         'amount'      => data_get($data, 'refund.amount'),
                         'method'      => data_get($data, 'refund.method', 'cash'),
@@ -456,8 +459,15 @@ class SaleReturnController extends Controller
                         'refunded_at' => data_get($data, 'refund.refunded_at'),
                     ],
                 ]);
-                // We only pass Request; Accounting is injected in controller method signature in your app.
-                return $this->approve($fake, $return->id, app(\App\Services\AccountingService::class), app(CustomerPaymentService::class));
+                $fake->setUserResolver(fn () => $request->user());
+
+                return $this->approve(
+                    $fake,
+                    $return->id,
+                    $branches,
+                    app(\App\Services\AccountingService::class),
+                    app(CustomerPaymentService::class)
+                );
             }
 
             return ApiResponse::success($return->load('items'));
@@ -467,6 +477,7 @@ class SaleReturnController extends Controller
     public function approve(
         Request $request,
         int $id,
+        BranchContextService $branches,
         AccountingService $accounting,
         CustomerPaymentService $cps
     ) {
@@ -477,12 +488,14 @@ class SaleReturnController extends Controller
             'refund.refunded_at' => 'nullable|date',
         ]);
 
-        return DB::transaction(function () use ($request, $id, $accounting, $cps) {
+        return DB::transaction(function () use ($request, $id, $branches, $accounting, $cps) {
             /** @var \App\Models\SaleReturn $return */
             $return = SaleReturn::query()
                 ->with(['items', 'sale']) // sale_return_items
                 ->lockForUpdate()
                 ->findOrFail($id);
+
+            $branches->assertCanAccessBranch($request, $return->branch_id ? (int) $return->branch_id : null);
 
             if ($return->status === 'approved') {
                 $refunded = SaleReturnRefund::where('sale_return_id', $return->id)->sum('amount');
@@ -663,4 +676,69 @@ class SaleReturnController extends Controller
             ], 'Sale return approved' . ($return->total > 0 ? ' and refund posted' : ''));
         });
     }
+
+
+    public function refund(Request $request, int $id, BranchContextService $branches, CashSyncService $cashSync)
+    {
+        $data = $request->validate([
+            'amount'      => ['required', 'numeric', 'min:0.01'],
+            'method'      => ['nullable', 'string', 'max:50'],
+            'reference'   => ['nullable', 'string', 'max:190'],
+            'refunded_at' => ['nullable', 'date'],
+        ]);
+
+        return DB::transaction(function () use ($request, $id, $data, $branches, $cashSync) {
+            /** @var SaleReturn $return */
+            $return = SaleReturn::query()
+                ->lockForUpdate()
+                ->findOrFail($id);
+
+            $branches->assertCanAccessBranch($request, $return->branch_id ? (int) $return->branch_id : null);
+
+            if ($return->status !== 'approved') {
+                throw ValidationException::withMessages([
+                    'status' => ['Return must be approved before refunding.'],
+                ]);
+            }
+
+            $amount = round((float) $data['amount'], 2);
+            $refunded = (float) SaleReturnRefund::query()
+                ->where('sale_return_id', $return->id)
+                ->sum('amount');
+            $left = round(max(0, (float) $return->total - $refunded), 2);
+
+            if ($amount > $left) {
+                throw ValidationException::withMessages([
+                    'amount' => ["Refund {$amount} exceeds refundable left {$left}."],
+                ]);
+            }
+
+            $refund = SaleReturnRefund::query()->create([
+                'sale_return_id' => $return->id,
+                'amount'         => $amount,
+                'method'         => $data['method'] ?? 'cash',
+                'reference'      => $data['reference'] ?? null,
+                'refunded_at'    => isset($data['refunded_at']) ? Carbon::parse($data['refunded_at']) : now(),
+                'created_by'     => optional($request->user())->id,
+            ]);
+
+            try {
+                $cashSync->syncFromSaleReturnRefund($refund, $return->branch_id ? (int) $return->branch_id : null);
+            } catch (\Throwable $e) {
+                report($e);
+            }
+
+            $newTotal = (float) SaleReturnRefund::query()
+                ->where('sale_return_id', $return->id)
+                ->sum('amount');
+
+            return ApiResponse::success([
+                'return' => $return->fresh(['items', 'refunds']),
+                'refund' => $refund->fresh(),
+                'refunded_total' => round($newTotal, 2),
+                'refundable_left' => round(max(0, (float) $return->total - $newTotal), 2),
+            ], 'Refund posted successfully');
+        });
+    }
+
 }

@@ -2,20 +2,18 @@
 
 namespace Database\Seeders;
 
-use Illuminate\Database\Console\Seeds\WithoutModelEvents;
+use App\Models\Branch;
+use App\Services\BranchRoleService;
 use Illuminate\Database\Seeder;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
+use Spatie\Permission\PermissionRegistrar;
 
 class RolePermissionSeeder extends Seeder
 {
-    /**
-     * Run the database seeds.
-     */
     public function run(): void
     {
-        // Define permissions
-        $permissions = [
+        $permissions = collect([
             'manage-stock',
             'view-reports',
             'view-users',
@@ -33,16 +31,13 @@ class RolePermissionSeeder extends Seeder
             'manage-categories',
             'view-brands',
             'manage-brands',
-            'adjust-stock',
             'create-sales',
             'manage-sales',
             'refund-sale',
             'view-sales',
             'manage-purchases',
             'view-purchases',
-            'manage-users',
             'view-branches',
-            'manage-branches',
             'view-cashbook',
             'manage-cashbook',
             'manage-accounts',
@@ -50,41 +45,82 @@ class RolePermissionSeeder extends Seeder
             'manage-roles',
             'manage-receipts',
             'manage-payments',
-        ];
+        ])->unique()->values();
 
         foreach ($permissions as $perm) {
-            Permission::firstOrCreate(['name' => $perm]);
+            Permission::firstOrCreate([
+                'name' => $perm,
+                'guard_name' => 'web',
+            ]);
         }
 
-        // Define roles
-        $admin = Role::firstOrCreate(['name' => 'admin']);
-        $manager = Role::firstOrCreate(['name' => 'manager']);
-        $delivery = Role::firstOrCreate(['name' => 'delivery']);
-        $salesman = Role::firstOrCreate(['name' => 'salesman']);
-
-        // Assign permissions
-        $admin->givePermissionTo(Permission::all());
-
-        $manager->givePermissionTo([
-            'refund-sale',
-            'view-sales',
-            'manage-products',
-            'manage-stock',
-            'view-reports'
+        $masterAdmin = Role::firstOrCreate([
+            'name' => 'master admin',
+            'guard_name' => 'web',
+        ], [
+            'branch_id' => null,
         ]);
+        $masterAdmin->syncPermissions(Permission::all());
 
-        // $cashier->givePermissionTo([
-        //     'create-sales',
-        //     'refund-sale',
-        //     'view-sales'
-        // ]);
-        $salesman->givePermissionTo([
-            'create-sales',
-            'refund-sale',
-            'view-sales',
-            'view-customers',
-            'view-vendors',
-            'view-products'
-        ]);
+        $branchRoleService = app(BranchRoleService::class);
+
+        foreach (Branch::query()->get() as $branch) {
+            $admin = Role::firstOrCreate([
+                'name' => $branchRoleService->internalNameForBranch('admin', $branch),
+                'guard_name' => 'web',
+            ], [
+                'branch_id' => $branch->id,
+            ]);
+            $admin->syncPermissions(Permission::whereNotIn('name', [
+                'view-branches',
+                'manage-branches',
+            ])->get());
+
+            $manager = Role::firstOrCreate([
+                'name' => $branchRoleService->internalNameForBranch('manager', $branch),
+                'guard_name' => 'web',
+            ], [
+                'branch_id' => $branch->id,
+            ]);
+            $manager->syncPermissions(Permission::whereIn('name', [
+                'refund-sale',
+                'view-sales',
+                'manage-products',
+                'view-products',
+                'manage-stock',
+                'view-stock',
+                'adjust-stock',
+                'view-reports',
+                'view-customers',
+                'view-vendors',
+            ])->get());
+
+            $delivery = Role::firstOrCreate([
+                'name' => $branchRoleService->internalNameForBranch('delivery', $branch),
+                'guard_name' => 'web',
+            ], [
+                'branch_id' => $branch->id,
+            ]);
+            $delivery->syncPermissions(Permission::whereIn('name', [
+                'view-sales',
+            ])->get());
+
+            $salesman = Role::firstOrCreate([
+                'name' => $branchRoleService->internalNameForBranch('salesman', $branch),
+                'guard_name' => 'web',
+            ], [
+                'branch_id' => $branch->id,
+            ]);
+            $salesman->syncPermissions(Permission::whereIn('name', [
+                'create-sales',
+                'refund-sale',
+                'view-sales',
+                'view-customers',
+                'view-vendors',
+                'view-products',
+            ])->get());
+        }
+
+        app(PermissionRegistrar::class)->forgetCachedPermissions();
     }
 }

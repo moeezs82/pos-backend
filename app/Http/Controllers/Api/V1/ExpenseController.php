@@ -7,6 +7,7 @@ use App\Http\Response\ApiResponse;
 use App\Models\Account;
 use App\Models\JournalPosting;
 use App\Services\AccountingService;
+use App\Services\BranchContextService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -15,7 +16,7 @@ use InvalidArgumentException;
 
 class ExpenseController extends Controller
 {
-    public function store(Request $request, AccountingService $acct)
+    public function store(Request $request, AccountingService $acct, BranchContextService $branches)
     {
         $data = $request->validate([
             'branch_id'           => 'nullable|integer|exists:branches,id',
@@ -54,7 +55,8 @@ class ExpenseController extends Controller
         }
 
         // Resolve branch / date / mode / status
-        $branchId = $data['branch_id'] ?? null;
+        $branchId = $branches->requireBranchId($request);
+        $data['branch_id'] = $branchId;
         $entryDate = $data['txn_date'] ?? Carbon::today()->toDateString();
         $single    = (bool)($data['single_entry'] ?? true);
         $status    = $data['status'] ?? 'approved'; // if you have a status column on journal_entries

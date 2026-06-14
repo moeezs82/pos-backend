@@ -10,12 +10,13 @@ use App\Models\StockMovement;
 use App\Models\Vendor;
 use App\Services\AccountingService;
 use App\Services\CashSyncService;
+use App\Services\BranchContextService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class PurchaseClaimController extends Controller
 {
-    public function index(Request $request)
+    public function index(Request $request, BranchContextService $branches)
     {
         $query = PurchaseClaim::with([
             'purchase:id,invoice_no,vendor_id,branch_id,subtotal,total',
@@ -23,9 +24,7 @@ class PurchaseClaimController extends Controller
             'branch:id,name'
         ])->withSum('receipts as received_total', 'amount');
 
-        if ($request->branch_id) {
-            $query->where('branch_id', $request->branch_id);
-        }
+        $branches->applyToQuery($query, $request, 'branch_id');
         if ($request->vendor_id) {
             $query->where('vendor_id', $request->vendor_id);
         }
@@ -49,7 +48,7 @@ class PurchaseClaimController extends Controller
         return ApiResponse::success($query->orderByDesc('id')->paginate(15));
     }
 
-    public function show($id)
+    public function show(Request $request, $id, BranchContextService $branches)
     {
         $claim = PurchaseClaim::with([
             'purchase:id,invoice_no,vendor_id,branch_id,subtotal,total',
@@ -59,10 +58,12 @@ class PurchaseClaimController extends Controller
             'receipts:id,purchase_claim_id,amount,method,reference,received_at,created_at'
         ])->findOrFail($id);
 
+        $branches->assertCanAccessBranch($request, $claim->branch_id ? (int) $claim->branch_id : null);
+
         return ApiResponse::success($claim);
     }
 
-    public function store(Request $request, AccountingService $accounting, CashSyncService $cashSync, \App\Services\VendorPaymentService $vps)
+    public function store(Request $request, AccountingService $accounting, CashSyncService $cashSync, \App\Services\VendorPaymentService $vps, BranchContextService $branches)
     {
         $data = $request->validate([
             'purchase_id' => ['required', 'integer', 'exists:purchases,id'],
@@ -85,12 +86,14 @@ class PurchaseClaimController extends Controller
             'receipt.received_at'  => ['nullable', 'date'],
         ]);
 
-        return DB::transaction(function () use ($data, $request, $accounting, $cashSync, $vps) {
+        return DB::transaction(function () use ($data, $request, $accounting, $cashSync, $vps, $branches) {
             // Lock the purchase header
             $purchase = \App\Models\Purchase::query()
                 ->where('id', $data['purchase_id'])
                 ->lockForUpdate()
                 ->firstOrFail();
+
+            $branches->assertCanAccessBranch($request, $purchase->branch_id ? (int) $purchase->branch_id : null);
 
             $type = $data['type'] ?? 'other';
 
@@ -550,12 +553,15 @@ class PurchaseClaimController extends Controller
         $id,
         Request $request,
         \App\Services\AccountingService $accounting,
-        \App\Services\VendorPaymentService $vps
+        \App\Services\VendorPaymentService $vps,
+        BranchContextService $branches
     ) {
-        return DB::transaction(function () use ($id, $request, $accounting, $vps) {
+        return DB::transaction(function () use ($id, $request, $accounting, $vps, $branches) {
             $claim = PurchaseClaim::with(['items', 'purchase:id,vendor_id,branch_id,invoice_no'])
                 ->lockForUpdate()
                 ->findOrFail($id);
+
+            $branches->assertCanAccessBranch($request, $claim->branch_id ? (int) $claim->branch_id : null);
 
             if ($claim->status !== 'pending') {
                 return ApiResponse::error('Only pending claims can be approved.', 422);
@@ -593,7 +599,7 @@ class PurchaseClaimController extends Controller
     /**
      * Create a receipt for an existing claim (endpoint).
      */
-    public function receipt(Request $request, $id, \App\Services\AccountingService $accounting, \App\Services\CashSyncService $cashSync)
+    public function receipt(Request $request, $id, \App\Services\AccountingService $accounting, \App\Services\CashSyncService $cashSync, BranchContextService $branches)
     {
         $request->validate([
             'amount'      => 'required|numeric|min:0.01',
@@ -602,12 +608,14 @@ class PurchaseClaimController extends Controller
             'received_at' => 'nullable|date',
         ]);
 
-        return DB::transaction(function () use ($request, $id, $accounting, $cashSync) {
+        return DB::transaction(function () use ($request, $id, $accounting, $cashSync, $branches) {
             /** @var \App\Models\PurchaseClaim $claim */
             $claim = PurchaseClaim::query()
                 ->where('id', $id)
                 ->lockForUpdate()
                 ->firstOrFail();
+
+            $branches->assertCanAccessBranch($request, $claim->branch_id ? (int) $claim->branch_id : null);
 
             // create receipt record(s) and get new total + this amount
             $receiptResult = $this->storeReceipt($claim, $request);
@@ -670,9 +678,10 @@ class PurchaseClaimController extends Controller
     }
 
 
-    public function reject($id, Request $request)
+    public function reject($id, Request $request, BranchContextService $branches)
     {
         $claim = PurchaseClaim::findOrFail($id);
+        $branches->assertCanAccessBranch($request, $claim->branch_id ? (int) $claim->branch_id : null);
 
         if ($claim->status !== 'pending') {
             return ApiResponse::error("Only pending claims can be rejected.", 422);
@@ -687,9 +696,10 @@ class PurchaseClaimController extends Controller
         return ApiResponse::success($claim);
     }
 
-    public function close($id, Request $request)
+    public function close($id, Request $request, BranchContextService $branches)
     {
         $claim = PurchaseClaim::findOrFail($id);
+        $branches->assertCanAccessBranch($request, $claim->branch_id ? (int) $claim->branch_id : null);
 
         if (!in_array($claim->status, ['approved', 'rejected'])) {
             return ApiResponse::error("Only approved or rejected claims can be closed.", 422);

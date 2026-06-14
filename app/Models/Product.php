@@ -11,6 +11,7 @@ class Product extends Model
     use SoftDeletes, HasFactory;
 
     protected $fillable = [
+        'branch_id',
         'sku',
         'barcode',
         'name',
@@ -46,6 +47,11 @@ class Product extends Model
     public function brand()
     {
         return $this->belongsTo(Brand::class);
+    }
+
+    public function branch()
+    {
+        return $this->belongsTo(Branch::class);
     }
 
     public function stocks()

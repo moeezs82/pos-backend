@@ -78,8 +78,13 @@ class ReturnAnalyticsService
             ->get()
             ->keyBy('d');
 
-        $inlineReturnsBase = DB::table('sales as s')
-            ->where('s.total', '<', 0)
+        $inlineReturnsBase = DB::table('sale_items as si')
+            ->join('sales as s', 's.id', '=', 'si.sale_id')
+            ->whereNull('s.deleted_at')
+            ->where(function ($negative) {
+                $negative->where('si.quantity', '<', 0)
+                    ->orWhere('si.total', '<', 0);
+            })
             ->when($from,       fn($q) => $q->where('s.created_at', '>=', $from->copy()->startOfDay()))
             ->when($to,         fn($q) => $q->where('s.created_at', '<=', $to->copy()->endOfDay()))
             ->when($branchId,   fn($q) => $q->where('s.branch_id', $branchId))
@@ -89,8 +94,8 @@ class ReturnAnalyticsService
         $inlineReturnsPerDay = (clone $inlineReturnsBase)
             ->selectRaw("
                 DATE(s.created_at) as d,
-                COUNT(s.id) as return_count,
-                COALESCE(SUM(ABS(s.total)), 0) as return_amount
+                COUNT(DISTINCT s.id) as return_count,
+                COALESCE(SUM(ABS(si.total)), 0) as return_amount
             ")
             ->groupBy(DB::raw('DATE(s.created_at)'))
             ->orderBy('d')
@@ -120,14 +125,7 @@ class ReturnAnalyticsService
             ->get()
             ->keyBy('d');
 
-        $inlineQtyPerDay = DB::table('sale_items as si')
-            ->join('sales as s', 's.id', '=', 'si.sale_id')
-            ->where('si.quantity', '<', 0)
-            ->when($from,       fn($q) => $q->where('s.created_at', '>=', $from->copy()->startOfDay()))
-            ->when($to,         fn($q) => $q->where('s.created_at', '<=', $to->copy()->endOfDay()))
-            ->when($branchId,   fn($q) => $q->where('s.branch_id', $branchId))
-            ->when($salesmanId, fn($q) => $q->where('s.salesman_id', $salesmanId))
-            ->when($customerId, fn($q) => $q->where('s.customer_id', $customerId))
+        $inlineQtyPerDay = (clone $inlineReturnsBase)
             ->selectRaw("
                 DATE(s.created_at) as d,
                 COALESCE(SUM(ABS(si.quantity)), 0) as return_qty
@@ -317,9 +315,9 @@ class ReturnAnalyticsService
 
         $inlineByReason = (clone $inlineReturnsBase)
             ->selectRaw("
-                'Inline negative sale' as reason,
-                COUNT(s.id) as return_count,
-                COALESCE(SUM(ABS(s.total)), 0) as return_amount
+                'Inline negative sale item' as reason,
+                COUNT(DISTINCT s.id) as return_count,
+                COALESCE(SUM(ABS(si.total)), 0) as return_amount
             ")
             ->get();
 

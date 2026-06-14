@@ -8,6 +8,8 @@ use App\Models\Product;
 use App\Models\Purchase;
 use App\Models\StockMovement;
 use App\Models\Vendor;
+use App\Services\BranchContextService;
+use App\Services\ProductBranchService;
 use App\Services\VendorPaymentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -16,14 +18,12 @@ class PurchaseController extends Controller
 {
     /* ===================== Listing / Show ===================== */
 
-    public function index(Request $request)
+    public function index(Request $request, BranchContextService $branches)
     {
         $query = Purchase::with(['vendor', 'branch'])
             ->withSum('payments as paid_amount', 'amount');
 
-        // if ($request->filled('branch_id')) {
-        //     $query->where('branch_id', $request->branch_id);
-        // }
+        $branches->applyToQuery($query, $request, 'branch_id');
         if ($request->filled('vendor_id')) {
             $query->where('vendor_id', $request->vendor_id);
         }
@@ -55,7 +55,7 @@ class PurchaseController extends Controller
         return ApiResponse::success($purchases);
     }
 
-    public function update(Request $request, $id)
+    public function update(Request $request, BranchContextService $branches, $id)
     {
         $data = $request->validate([
             'discount' => 'nullable|numeric|min:0',
@@ -63,6 +63,7 @@ class PurchaseController extends Controller
         ]);
 
         $purchase = Purchase::with(['items'])->findOrFail($id);
+        $branches->assertCanAccessBranch($request, $purchase->branch_id ? (int) $purchase->branch_id : null);
 
         return DB::transaction(function () use ($purchase, $data) {
             // Snapshot old totals BEFORE change
@@ -118,18 +119,19 @@ class PurchaseController extends Controller
         });
     }
 
-    public function show(Purchase $purchase)
+    public function show(Request $request, Purchase $purchase, BranchContextService $branches)
     {
+        $branches->assertCanAccessBranch($request, $purchase->branch_id ? (int) $purchase->branch_id : null);
         $purchase->load(['vendor', 'branch', 'items.product', 'payments']);
         return ApiResponse::success($purchase);
     }
 
     /* ===================== Create PO ===================== */
-    public function store(Request $request, VendorPaymentService $vendorPaymentService)
+    public function store(Request $request, VendorPaymentService $vendorPaymentService, BranchContextService $branches, ProductBranchService $productBranches)
     {
         $data = $request->validate([
             'vendor_id' => 'required|exists:vendors,id',
-            // 'branch_id' => 'nullable|exists:branches,id',
+            'branch_id' => 'nullable|exists:branches,id',
             'invoice_date' => 'nullable|date',
             'items' => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
@@ -153,8 +155,16 @@ class PurchaseController extends Controller
         ]);
 
         $receiveNow = (bool)($data['receive_now'] ?? false);
+        $branchId = $branches->requireBranchId($request);
 
-        return DB::transaction(function () use ($data, $receiveNow, $vendorPaymentService) {
+        $vendor = Vendor::query()->findOrFail((int) $data['vendor_id']);
+        if ($vendor->branch_id && (int) $vendor->branch_id !== $branchId) {
+            abort(422, 'Selected vendor belongs to a different branch.');
+        }
+
+        $productBranches->assertProductsBelongToBranch(collect($data['items'])->pluck('product_id'), $branchId);
+
+        return DB::transaction(function () use ($data, $receiveNow, $vendorPaymentService, $branchId) {
             // totals
             $subtotal = collect($data['items'])->sum(function ($i) {
                 $qty   = (float)($i['quantity']      ?? 0);
@@ -172,7 +182,7 @@ class PurchaseController extends Controller
             $p = Purchase::create([
                 'invoice_no'     => $this->generateNumber('PUR'),
                 'vendor_id'      => $data['vendor_id'],
-                // 'branch_id'      => $data['branch_id'],
+                'branch_id'      => $branchId,
                 'invoice_date'   => $data['invoice_date'] ?? now()->toDateString(),
                 'subtotal'       => round($subtotal, 2),
                 'discount'       => round($data['discount'] ?? 0, 2),
@@ -206,7 +216,7 @@ class PurchaseController extends Controller
                     'total'        => $lineTotal,
                 ]);
 
-                Product::where('id', $row['product_id'])->update([
+                Product::where('id', $row['product_id'])->where('branch_id', $branchId)->update([
                     'price' => (float)$row['price'],
                 ]);
 
@@ -224,7 +234,7 @@ class PurchaseController extends Controller
                     branchId: $p->branch_id,
                     receiveQty: $item->quantity,
                     // unitPrice: $item->price,
-                    unitPrice: $lineSubtotal/$item->quantity, // in case of line discount
+                    unitPrice: $lineTotal/$item->quantity, // in case of line discount
                     ref: $p->invoice_no
                 );
             }
@@ -270,7 +280,7 @@ class PurchaseController extends Controller
 
     /* ===================== Receive (Partial Allowed) ===================== */
 
-    public function receive(Request $request, Purchase $purchase)
+    public function receive(Request $request, Purchase $purchase, BranchContextService $branches, ProductBranchService $productBranches)
     {
         $data = $request->validate([
             'items' => 'required|array|min:1',
@@ -279,6 +289,9 @@ class PurchaseController extends Controller
             'reference' => 'nullable|string', // GRN
             'received_at' => 'nullable|date',
         ]);
+
+        $branches->assertCanAccessBranch($request, $purchase->branch_id ? (int) $purchase->branch_id : null);
+        $productBranches->assertProductsBelongToBranch(collect($data['items'])->pluck('product_id'), (int) $purchase->branch_id);
 
         if ($purchase->receive_status === 'cancelled') {
             return ApiResponse::error('Purchase is cancelled, receiving not allowed.', 422);
@@ -327,7 +340,7 @@ class PurchaseController extends Controller
 
     /* ===================== Payments: Add / Update / Delete ===================== */
 
-    public function addPayment(Request $request, Purchase $purchase, VendorPaymentService $vendorPaymentService)
+    public function addPayment(Request $request, Purchase $purchase, VendorPaymentService $vendorPaymentService, BranchContextService $branches)
     {
         $data = $request->validate([
             'method' => 'nullable|string',
@@ -336,6 +349,8 @@ class PurchaseController extends Controller
             // 'paid_at' => 'nullable|date',
             // 'meta'   => 'nullable|array',
         ]);
+        $branches->assertCanAccessBranch($request, $purchase->branch_id ? (int) $purchase->branch_id : null);
+
         $data['vendor_id'] = $purchase->vendor_id;
         $data['branch_id'] = $purchase->branch_id;
         $data['purchase_id'] = $purchase->id;
@@ -354,8 +369,10 @@ class PurchaseController extends Controller
         });
     }
 
-    public function updatePayment(Request $request, Purchase $purchase, $paymentId)
+    public function updatePayment(Request $request, Purchase $purchase, BranchContextService $branches, $paymentId)
     {
+        $branches->assertCanAccessBranch($request, $purchase->branch_id ? (int) $purchase->branch_id : null);
+
         $data = $request->validate([
             'method' => 'sometimes|string|nullable',
             'amount' => 'sometimes|numeric|min:0.01',
@@ -374,11 +391,12 @@ class PurchaseController extends Controller
         });
     }
 
-    public function deletePayment(Purchase $purchase, $paymentId)
+    public function deletePayment(Request $request, Purchase $purchase, BranchContextService $branches, $paymentId)
     {
+        $branches->assertCanAccessBranch($request, $purchase->branch_id ? (int) $purchase->branch_id : null);
+
         return DB::transaction(function () use ($purchase, $paymentId) {
             $payment = $purchase->payments()->findOrFail($paymentId);
-            dd($payment->payment, $payment);
             $payment->delete();
 
             $this->recalculatePurchase($purchase->fresh());
@@ -389,8 +407,10 @@ class PurchaseController extends Controller
 
     /* ===================== Items: Add / Update / Delete ===================== */
 
-    public function addItem(Request $request, Purchase $purchase)
+    public function addItem(Request $request, Purchase $purchase, BranchContextService $branches, ProductBranchService $productBranches)
     {
+        $branches->assertCanAccessBranch($request, $purchase->branch_id ? (int) $purchase->branch_id : null);
+
         $data = $request->validate([
             'product_id' => 'required|exists:products,id',
             'quantity'   => 'required|integer|min:1',
@@ -398,7 +418,8 @@ class PurchaseController extends Controller
             'discount'      => 'nullable|numeric|min:0',
         ]);
 
-        $branchId = $purchase->branch_id;
+        $branchId = (int) $purchase->branch_id;
+        $productBranches->assertProductsBelongToBranch([(int) $data['product_id']], $branchId);
 
         return DB::transaction(function () use ($purchase, $data, $branchId) {
             // Snapshot old totals
@@ -461,13 +482,16 @@ class PurchaseController extends Controller
         });
     }
 
-    public function updateItem(Request $request, Purchase $purchase, $itemId)
+    public function updateItem(Request $request, Purchase $purchase, BranchContextService $branches, $itemId)
     {
+        $branches->assertCanAccessBranch($request, $purchase->branch_id ? (int) $purchase->branch_id : null);
+
         $data = $request->validate([
             'quantity' => 'sometimes|integer|min:1',
             'price'    => 'sometimes|numeric|min:0',
         ]);
 
+        $branches->assertCanAccessBranch($request, $purchase->branch_id ? (int) $purchase->branch_id : null);
         $branchId = (int) $purchase->branch_id;
 
         return DB::transaction(function () use ($purchase, $itemId, $data, $branchId) {
@@ -583,8 +607,9 @@ class PurchaseController extends Controller
         });
     }
 
-    public function deleteItem(Purchase $purchase, $itemId)
+    public function deleteItem(Request $request, Purchase $purchase, BranchContextService $branches, $itemId)
     {
+        $branches->assertCanAccessBranch($request, $purchase->branch_id ? (int) $purchase->branch_id : null);
         $branchId = (int) $purchase->branch_id;
 
         return DB::transaction(function () use ($purchase, $itemId, $branchId) {
@@ -663,8 +688,10 @@ class PurchaseController extends Controller
 
     /* ===================== Cancel ===================== */
 
-    public function cancel(Purchase $purchase)
+    public function cancel(Request $request, Purchase $purchase, BranchContextService $branches)
     {
+        $branches->assertCanAccessBranch($request, $purchase->branch_id ? (int) $purchase->branch_id : null);
+
         $receivedAny = $purchase->items()->sum('received_qty') > 0;
         if ($receivedAny) {
             return ApiResponse::error('Cannot cancel: items already received.', 422);

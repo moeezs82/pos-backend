@@ -7,22 +7,24 @@ use App\Http\Requests\VendorRequest;
 use App\Http\Resources\VendorResource;
 use App\Http\Response\ApiResponse;
 use App\Models\Vendor;
+use App\Services\BranchContextService;
 use App\Services\LedgerService;
 use App\Services\VendorPaymentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schema;
 
 class VendorController extends Controller
 {
-    public function index(Request $request)
+    public function index(Request $request, BranchContextService $branches)
     {
         // ---- Inputs ----
         $page           = max(1, (int)$request->get('page', 1));
         $perPage        = max(1, min(500, (int)$request->get('per_page', 15)));
         $search         = trim((string)$request->get('search', ''));
         $includeBalance = filter_var($request->boolean('include_balance'), FILTER_VALIDATE_BOOLEAN);
-        $branchId       = $request->integer('branch_id'); // optional
+        $branchId       = $branches->effectiveBranchId($request); // optional
 
         // ---- Base query (cheap) ----
         $idQuery = Vendor::query()->select('id');
@@ -34,6 +36,16 @@ class VendorController extends Controller
                     ->orWhere('email',      'like', "%{$search}%")
                     ->orWhere('phone',      'like', "%{$search}%");
             });
+        }
+
+        if (Schema::hasColumn('vendors', 'branch_id')) {
+            if (!$branches->isMasterAdmin($request->user()) && $branchId) {
+                $idQuery->where(fn ($q) => $q->where('branch_id', $branchId));
+                // $idQuery->where(fn ($q) => $q->where('branch_id', $branchId)->orWhereNull('branch_id'));
+            } elseif ($branches->isMasterAdmin($request->user()) && $request->filled('branch_id')) {
+                $idQuery->where(fn ($q) => $q->where('branch_id', $branchId));
+                // $idQuery->where(fn ($q) => $q->where('branch_id', $branchId)->orWhereNull('branch_id'));
+            }
         }
 
         // Light + indexable sort (tweak to your indexed columns)
@@ -148,10 +160,11 @@ class VendorController extends Controller
         ], 'Vendors fetched successfully');
     }
 
-    public function store(VendorRequest $request)
+    public function store(VendorRequest $request, BranchContextService $branches)
     {
         $data = $request->validated();
 
+        $data['branch_id'] = $branches->requireBranchId($request);
         if (isset($data['password'])) {
             $data['password'] = Hash::make($data['password']);
         }
@@ -159,9 +172,13 @@ class VendorController extends Controller
         return ApiResponse::success(new VendorResource($vendor), 'Vendor created successfully');
     }
 
-    public function show(Request $request, Vendor $vendor)
+    public function show(Request $request, Vendor $vendor, BranchContextService $branches)
     {
-        $branchId   = $request->integer('branch_id');
+        if ($vendor->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $vendor->branch_id);
+        }
+
+        $branchId   = $branches->effectiveBranchId($request);
         $partyTypes = ['vendor', Vendor::class];
 
         // For Vendors (AP):
@@ -176,7 +193,7 @@ class VendorController extends Controller
         ")
             ->whereIn('jp.party_type', $partyTypes)
             ->where('jp.party_id', $vendor->id)
-            // ->when($branchId, fn($q) => $q->where('je.branch_id', $branchId))
+            ->when($branchId, fn($q) => $q->where('je.branch_id', $branchId))
             ->first();
 
         $res = (new VendorResource($vendor))->toArray($request);
@@ -189,9 +206,14 @@ class VendorController extends Controller
         return ApiResponse::success($res, 'Vendor fetched successfully');
     }
 
-    public function update(VendorRequest $request, Vendor $vendor)
+    public function update(VendorRequest $request, Vendor $vendor, BranchContextService $branches)
     {
+        if ($vendor->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $vendor->branch_id);
+        }
+
         $data = $request->validated();
+        $data['branch_id'] = $vendor->branch_id ?: $branches->requireBranchId($request);
         if (isset($data['password'])) {
             $data['password'] = Hash::make($data['password']);
         }
@@ -199,19 +221,27 @@ class VendorController extends Controller
         return ApiResponse::success(new VendorResource($vendor), 'Vendor updated successfully');
     }
 
-    public function destroy(Vendor $vendor)
+    public function destroy(Request $request, Vendor $vendor, BranchContextService $branches)
     {
+        if ($vendor->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $vendor->branch_id);
+        }
+
         $vendor->delete();
         return ApiResponse::success(null, 'Vendor deleted successfully');
     }
 
     public function purchases(
         Request $request,
-        Vendor $vendor
+        Vendor $vendor,
+        BranchContextService $branches
     ) {
         $page     = max(1, (int)$request->get('page', 1));
         $perPage  = max(1, min(100, (int)$request->get('per_page', 15)));
-        $branchId = $request->integer('branch_id');
+        if ($vendor->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $vendor->branch_id);
+        }
+        $branchId = $branches->effectiveBranchId($request);
 
         // Count
         $countQ = DB::table('purchases')->where('vendor_id', $vendor->id);
@@ -254,11 +284,15 @@ class VendorController extends Controller
 
     public function payments(
         Request $request,
-        Vendor $vendor
+        Vendor $vendor,
+        BranchContextService $branches
     ) {
         $page     = max(1, (int)$request->get('page', 1));
         $perPage  = max(1, min(100, (int)$request->get('per_page', 15)));
-        $branchId = $request->integer('branch_id');
+        if ($vendor->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $vendor->branch_id);
+        }
+        $branchId = $branches->effectiveBranchId($request);
 
         // Support both 'vendor' and FQCN in party_type
         $partyTypes = [
@@ -271,8 +305,8 @@ class VendorController extends Controller
             ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
             ->whereIn('jp.party_type', $partyTypes)
             ->where('jp.party_id', $vendor->id)
-            ->where('jp.debit', '>', 0);
-        // ->when($branchId, fn($q) => $q->where('je.branch_id', $branchId));
+            ->where('jp.debit', '>', 0)
+            ->when($branchId, fn($q) => $q->where('je.branch_id', $branchId));
 
         $total = (clone $countQ)->count();
 
@@ -290,7 +324,7 @@ class VendorController extends Controller
             ->whereIn('jp.party_type', $partyTypes)
             ->where('jp.party_id', $vendor->id)
             ->where('jp.debit', '>', 0)
-            // ->when($branchId, fn($q) => $q->where('je.branch_id', $branchId))
+            ->when($branchId, fn($q) => $q->where('je.branch_id', $branchId))
             ->orderByDesc(DB::raw('COALESCE(je.entry_date, je.created_at)'))
             ->orderByDesc('jp.id')
             ->skip(($page - 1) * $perPage)
@@ -316,11 +350,14 @@ class VendorController extends Controller
         ], 'Vendor payments fetched successfully (from journal)');
     }
 
-    public function ledger(Request $request, Vendor $vendor)
+    public function ledger(Request $request, Vendor $vendor, BranchContextService $branches)
     {
         $page     = max(1, (int)$request->get('page', 1));
         $perPage  = max(1, min(100, (int)$request->get('per_page', 15)));
-        $branchId = $request->integer('branch_id');
+        if ($vendor->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $vendor->branch_id);
+        }
+        $branchId = $branches->effectiveBranchId($request);
 
         // Optional date range (inclusive)
         $from = $request->date('from'); // Carbon|null
@@ -334,14 +371,15 @@ class VendorController extends Controller
             'from' => $from,
             'to' => $to,
             'page' => $page,
-            'per_page' => $perPage
+            'per_page' => $perPage,
+            'branch_id' => $branchId,
         ]);
 
         $label = ucfirst($data['party_type']) . ' ledger fetched successfully';
         return ApiResponse::success($data, $label);
     }
 
-    public function storePayment(Request $request, Vendor $vendor, VendorPaymentService $vendorPaymentService)
+    public function storePayment(Request $request, Vendor $vendor, VendorPaymentService $vendorPaymentService, BranchContextService $branches)
     {
         $data = $request->validate([
             'branch_id'  => 'nullable|exists:branches,id',
@@ -356,11 +394,16 @@ class VendorController extends Controller
             'allocations.*.amount'      => 'required_with:allocations|numeric|min:0.01',
         ]);
 
-        return DB::transaction(function () use ($data, $vendorPaymentService, $vendor) {
+        if ($vendor->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $vendor->branch_id);
+        }
+        $branchId = $branches->requireBranchId($request);
+
+        return DB::transaction(function () use ($data, $vendorPaymentService, $vendor, $branchId) {
 
             $vpData = [
                 'vendor_id'  => $vendor->id,
-                'branch_id'  => $data['branch_id'] ?? null,
+                'branch_id'  => $branchId,
                 'paid_at'    => $data['paid_at'] ?? now()->toDateString(),
                 'method'     => $data['method'],
                 'amount'     => round($data['amount'], 2),

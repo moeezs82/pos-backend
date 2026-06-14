@@ -5,31 +5,51 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\RoleRequest;
 use App\Http\Response\ApiResponse;
+use App\Services\BranchContextService;
+use App\Services\BranchRoleService;
 use Illuminate\Http\Request;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
+use Spatie\Permission\PermissionRegistrar;
 
 class RoleController extends Controller
 {
-    public function index(Request $request)
+    public function index(Request $request, BranchRoleService $branchRoles)
     {
-        $q = Role::query()
+        $q = $branchRoles->scopedQueryForRequest($request)
             ->when($request->filled('search'), function ($q) use ($request) {
-                $s = $request->string('search')->toString();
+                $s = trim($request->string('search')->toString());
                 $q->where('name', 'like', "%{$s}%");
             })
-            ->with('permissions:id,name');
+            ->with('permissions:id,name')
+            ->orderBy('name');
 
-        return ApiResponse::success($q->paginate($request->integer('per_page', 50)));
+        $perPage = max(1, min(200, $request->integer('per_page', 50)));
+
+        if ($request->boolean('all')) {
+            return ApiResponse::success(
+                $q->get()->map(fn (Role $role) => $branchRoles->publicRole($role))->values()
+            );
+        }
+
+        $paginator = $q->paginate($perPage);
+        $paginator->getCollection()->transform(fn (Role $role) => $branchRoles->publicRole($role));
+
+        return ApiResponse::success($paginator);
     }
 
-    public function store(RoleRequest $request)
+    public function store(RoleRequest $request, BranchContextService $branches, BranchRoleService $branchRoles)
     {
         $data = $request->validated();
+        $branchId = $branches->requireBranchId($request);
+        $guardName = $data['guard_name'] ?? 'web';
+
+        $branchRoles->assertBranchRoleNameAvailable($request, $data['name'], $guardName);
 
         $role = Role::create([
-            'name'       => $data['name'],
-            'guard_name' => $data['guard_name'] ?? 'web',
+            'name' => $branchRoles->internalNameForBranch($data['name'], $branchId),
+            'guard_name' => $guardName,
+            'branch_id' => $branchId,
         ]);
 
         if (!empty($data['permissions'])) {
@@ -37,65 +57,91 @@ class RoleController extends Controller
             $role->syncPermissions($perms);
         }
 
-        return ApiResponse::success($role->load('permissions:id,name'), null, 201);
+        app(PermissionRegistrar::class)->forgetCachedPermissions();
+
+        return ApiResponse::success($branchRoles->publicRole($role->load('permissions:id,name')), null, 201);
     }
 
-    public function show(Role $role)
+    public function show(Request $request, Role $role, BranchRoleService $branchRoles)
     {
-        return ApiResponse::success($role->load('permissions:id,name'));
+        $branchRoles->assertRoleBelongsToRequestBranch($request, $role);
+
+        return ApiResponse::success($branchRoles->publicRole($role->load('permissions:id,name')));
     }
 
-    public function update(RoleRequest $request, Role $role)
+    public function update(RoleRequest $request, Role $role, BranchContextService $branches, BranchRoleService $branchRoles)
     {
+        $branchRoles->assertRoleBelongsToRequestBranch($request, $role);
+
         $data = $request->validated();
+        $branchId = $branches->requireBranchId($request);
+        $guardName = $data['guard_name'] ?? $role->guard_name ?? 'web';
 
-        $role->update([
-            'name'       => $data['name']       ?? $role->name,
-            'guard_name' => $data['guard_name'] ?? 'web',
-        ]);
+        if (array_key_exists('name', $data)) {
+            $branchRoles->assertBranchRoleNameAvailable($request, $data['name'], $guardName, (int) $role->id);
+            $role->name = $branchRoles->internalNameForBranch($data['name'], $branchId);
+        }
+
+        $role->guard_name = $guardName;
+        $role->branch_id = $branchId;
+        $role->save();
 
         if (array_key_exists('permissions', $data)) {
             $perms = Permission::whereIn('name', $data['permissions'] ?? [])->get();
             $role->syncPermissions($perms);
         }
 
-        return ApiResponse::success($role->load('permissions:id,name'));
+        app(PermissionRegistrar::class)->forgetCachedPermissions();
+
+        return ApiResponse::success($branchRoles->publicRole($role->load('permissions:id,name')));
     }
 
-    public function destroy(Role $role)
+    public function destroy(Request $request, Role $role, BranchRoleService $branchRoles)
     {
+        $branchRoles->assertRoleBelongsToRequestBranch($request, $role);
+
         if ($role->users()->exists()) {
-            return ApiResponse::error("Role is assigned to users and cannot be deleted.", 422);
+            return ApiResponse::error('Role is assigned to users and cannot be deleted.', 422);
         }
+
         $role->delete();
+        app(PermissionRegistrar::class)->forgetCachedPermissions();
+
         return ApiResponse::success(null, 'Role deleted successfully');
     }
 
-    // Sync permissions to a role (permissions must already exist; no Permission CRUD)
-    public function syncPermissions(Request $request, Role $role)
+    public function syncPermissions(Request $request, Role $role, BranchRoleService $branchRoles)
     {
-        $data = $request->validate(['permissions' => ['array'], 'permissions.*' => ['string']]);
+        $branchRoles->assertRoleBelongsToRequestBranch($request, $role);
+
+        $data = $request->validate([
+            'permissions' => ['array'],
+            'permissions.*' => ['string'],
+        ]);
+
         $perms = Permission::whereIn('name', $data['permissions'] ?? [])->get();
         $role->syncPermissions($perms);
-        return ApiResponse::success($role->load('permissions:id,name'));
+        app(PermissionRegistrar::class)->forgetCachedPermissions();
+
+        return ApiResponse::success($branchRoles->publicRole($role->load('permissions:id,name')));
     }
 
     public function availablePermissions(Request $request)
     {
         $perPage = (int) $request->integer('per_page', 200);
-        $guard   = $request->string('guard_name')->toString();
-        $search  = $request->string('search')->toString();
-        $all     = $request->boolean('all');
+        $guard = $request->string('guard_name')->toString();
+        $search = $request->string('search')->toString();
+        $all = $request->boolean('all');
 
         $q = Permission::query()
-            ->when($guard,  fn($q) => $q->where('guard_name', $guard))
-            ->when($search, fn($q) => $q->where('name', 'like', "%{$search}%"))
+            ->when($guard, fn ($q) => $q->where('guard_name', $guard))
+            ->when($search, fn ($q) => $q->where('name', 'like', "%{$search}%"))
             ->orderBy('name');
 
         if ($all) {
-            return \App\Http\Response\ApiResponse::success($q->get(['id', 'name', 'guard_name']));
+            return ApiResponse::success($q->get(['id', 'name', 'guard_name']));
         }
 
-        return \App\Http\Response\ApiResponse::success($q->paginate($perPage, ['id', 'name', 'guard_name']));
+        return ApiResponse::success($q->paginate($perPage, ['id', 'name', 'guard_name']));
     }
 }

@@ -7,15 +7,18 @@ use App\Http\Response\ApiResponse;
 use App\Models\ProductStock;
 use App\Models\Sale;
 use App\Models\StockMovement;
+use App\Services\BranchContextService;
+use App\Services\ProductBranchService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class SaleItemController extends Controller
 {
     // ADD item to sale
-    public function store(Request $request, $saleId)
+    public function store(Request $request, BranchContextService $branches, ProductBranchService $productBranches, $saleId)
     {
         $sale = Sale::with(['items', 'payments'])->findOrFail($saleId);
+        $branches->assertCanAccessBranch($request, $sale->branch_id ? (int) $sale->branch_id : null);
 
         $data = $request->validate([
             'product_id' => 'required|exists:products,id',
@@ -24,7 +27,8 @@ class SaleItemController extends Controller
             'discount_pct'      => 'nullable|numeric|min:0',
         ]);
 
-        $branchId = $sale->branch_id;
+        $branchId = (int) $sale->branch_id;
+        $productBranches->assertProductsBelongToBranch([(int) $data['product_id']], $branchId);
 
         return DB::transaction(function () use ($sale, $data, $branchId) {
             // snapshot old totals & cogs for adjustments
@@ -130,9 +134,10 @@ class SaleItemController extends Controller
     }
 
     // EDIT existing item (quantity/price)
-    public function update(Request $request, $saleId, $itemId)
+    public function update(Request $request, BranchContextService $branches, $saleId, $itemId)
     {
         $sale = Sale::with(['items', 'payments'])->findOrFail($saleId);
+        $branches->assertCanAccessBranch($request, $sale->branch_id ? (int) $sale->branch_id : null);
         $item = $sale->items()->findOrFail($itemId);
 
         $data = $request->validate([

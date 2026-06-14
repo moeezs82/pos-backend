@@ -6,7 +6,11 @@ use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
 use App\Models\Product;
 use App\Models\Sale;
+use App\Models\User;
 use App\Models\StockMovement;
+use App\Services\BranchContextService;
+use App\Services\BranchRoleService;
+use App\Services\ProductBranchService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -14,14 +18,12 @@ use Illuminate\Support\Str;
 class SaleController extends Controller
 {
     // List all sales
-    public function index(Request $request)
+    public function index(Request $request, BranchContextService $branches)
     {
         $query = Sale::with(['customer', 'branch'])
             ->withSum('payments as paid_amount', 'amount');
 
-        // if ($request->has('branch_id')) {
-        //     $query->where('branch_id', $request->branch_id);
-        // }
+        $branches->applyToQuery($query, $request, 'branch_id');
         if ($request->filled('customer_id')) {
             $query->where('customer_id', $request->customer_id);
         }
@@ -64,10 +66,10 @@ class SaleController extends Controller
         return ApiResponse::success($sales);
     }
 
-    public function show(Request $request, $id)
+    public function show(Request $request, BranchContextService $branches, $id)
     {
         $includeBalance = $request->boolean('include_balance'); // ?include_balance=1
-        $branchId       = $request->integer('branch_id');       // optional branch scope
+        $branchId       = $branches->effectiveBranchId($request);       // optional branch scope
 
         $sale = Sale::with([
             'customer:id,first_name,last_name',
@@ -78,6 +80,8 @@ class SaleController extends Controller
             'salesman:id,name',
             'deliveryBoy:id,name'
         ])->findOrFail($id);
+
+        $branches->assertCanAccessBranch($request, $sale->branch_id ? (int) $sale->branch_id : null);
 
         $asOf = $sale->created_at;             // optional ISO date/time, e.g. 2025-10-26 or 2025-10-26 23:59:59
 
@@ -138,7 +142,7 @@ class SaleController extends Controller
         return ApiResponse::success($sale);
     }
 
-    public function store(Request $request)
+    public function store(Request $request, BranchContextService $branches, ProductBranchService $productBranches)
     {
         $data = $request->validate([
             'customer_id' => 'nullable|exists:customers,id',
@@ -146,7 +150,7 @@ class SaleController extends Controller
             'salesman_id' => 'nullable|exists:users,id',
             'delivery_boy_id' => 'nullable|exists:users,id',
             'created_by'  => 'nullable|exists:users,id',
-            // 'branch_id'   => 'nullable|exists:branches,id',
+            'branch_id'   => 'nullable|exists:branches,id',
             'items'       => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
             'items.*.discount_pct' => 'nullable|numeric',
@@ -160,7 +164,29 @@ class SaleController extends Controller
             'sale_type' => 'nullable|string|in:dine_in,takeaway,delivery,self',
         ]);
 
-        $branchId = $data['branch_id'] ?? null;
+        $branchId = $branches->requireBranchId($request);
+
+        if (!empty($data['customer_id'])) {
+            $customer = \App\Models\Customer::query()->findOrFail((int) $data['customer_id']);
+            if ($customer->branch_id && (int) $customer->branch_id !== $branchId) {
+                abort(422, 'Selected customer belongs to a different branch.');
+            }
+        }
+        if (!empty($data['vendor_id'])) {
+            $vendor = \App\Models\Vendor::query()->findOrFail((int) $data['vendor_id']);
+            if ($vendor->branch_id && (int) $vendor->branch_id !== $branchId) {
+                abort(422, 'Selected vendor belongs to a different branch.');
+            }
+        }
+
+        if (!empty($data['salesman_id'])) {
+            $this->assertUserCanBeAssignedToBranch($request, $branches, (int) $data['salesman_id'], $branchId, 'salesman');
+        }
+        if (!empty($data['delivery_boy_id'])) {
+            $this->assertUserCanBeAssignedToBranch($request, $branches, (int) $data['delivery_boy_id'], $branchId, 'delivery');
+        }
+
+        $productBranches->assertProductsBelongToBranch(collect($data['items'])->pluck('product_id'), $branchId);
 
         return DB::transaction(function () use ($data, $branchId) {
             // totals
@@ -320,19 +346,22 @@ class SaleController extends Controller
         }
     }
 
-    public function updateDeliveryBoy(Request $request, $id)
+    public function updateDeliveryBoy(Request $request, BranchContextService $branches, $id)
     {
         $data = $request->validate([
             'delivery_boy_id' => 'nullable|exists:users,id'
         ]);
 
-        Sale::findOrFail($id);
         $sale = Sale::findOrFail($id);
+        $branches->assertCanAccessBranch($request, $sale->branch_id ? (int) $sale->branch_id : null);
+        if (!empty($data['delivery_boy_id'])) {
+            $this->assertUserCanBeAssignedToBranch($request, $branches, (int) $data['delivery_boy_id'], (int) $sale->branch_id, 'delivery');
+        }
         $sale->update($data);
         return ApiResponse::success($sale->fresh(), 'Delivery boy updated successfully');
     }
 
-    public function update(Request $request, $id)
+    public function update(Request $request, BranchContextService $branches, $id)
     {
         // Only allow updating discount & tax from this endpoint (as per your UI)
         $data = $request->validate([
@@ -342,6 +371,7 @@ class SaleController extends Controller
         ]);
 
         $sale = Sale::with(['items', 'payments'])->findOrFail($id);
+        $branches->assertCanAccessBranch($request, $sale->branch_id ? (int) $sale->branch_id : null);
 
         // Block edits on finalised/cancelled sales
         if (in_array($sale->status, ['cancelled', 'void', 'returned'])) {
@@ -449,6 +479,22 @@ class SaleController extends Controller
         }
 
         return ['ok' => true, 'message' => null];
+    }
+
+    private function assertUserCanBeAssignedToBranch(Request $request, BranchContextService $branches, int $userId, int $branchId, ?string $role = null): void
+    {
+        $user = User::query()->with('roles:id,name')->findOrFail($userId);
+        $branchRoles = app(BranchRoleService::class);
+
+        if ($role && !$branchRoles->userHasBaseRole($user, $role)) {
+            abort(422, ucfirst($role) . ' role is required for selected user.');
+        }
+
+        if ((int) ($user->branch_id ?? 0) !== (int) $branchId) {
+            abort(422, 'Selected user belongs to a different branch.');
+        }
+
+        $branches->assertCanAccessBranch($request, $branchId);
     }
 
     private function generateInvoiceNo(): string

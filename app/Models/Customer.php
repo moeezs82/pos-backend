@@ -11,7 +11,7 @@ class Customer extends Model
     use  SoftDeletes, HasFactory;
 
     protected $fillable = [
-        'first_name', 'last_name', 'email', 'phone', 'password', 'status', 'meta', 'address'
+        'branch_id', 'first_name', 'last_name', 'email', 'phone', 'password', 'status', 'meta', 'address'
     ];
 
     protected $casts = [

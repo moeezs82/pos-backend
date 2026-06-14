@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\V1\CategoryController;
 use App\Http\Controllers\Api\V1\CustomerController;
 use App\Http\Controllers\Api\V1\DayBookController;
 use App\Http\Controllers\Api\V1\DeliveryBoyController;
+use App\Http\Controllers\Api\V1\EnterpriseReportController;
 use App\Http\Controllers\Api\V1\ExpenseController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\ProductController;
@@ -38,12 +39,11 @@ Route::get('/test', function () {
 Route::prefix('v1')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
 
-    Route::middleware('auth:sanctum')->group(function () {
+    Route::middleware(['auth:sanctum', 'branch.context'])->group(function () {
         Route::post('/logout', [AuthController::class, 'logout']);
-        Route::get('/me', function (Request $request) {
-            return $request->user()->load('roles');
-        });
+        Route::get('/me', [AuthController::class, 'me']);
         Route::post('auth/verify-password', [AuthController::class, 'verifyPassword']);
+        Route::post('/switch-branch', [AuthController::class, 'switchBranch'])->name('switch-branch');
 
         // Branches
         Route::get('/branches', [BranchController::class, 'index'])
@@ -70,6 +70,7 @@ Route::prefix('v1')->group(function () {
             // Route::post('/{user}/permissions',  [UserController::class, 'syncPermissions'])->middleware('permission:manage-users');
         });
         Route::prefix('delivery-boys')->group(function () {
+            Route::get('/', [DeliveryBoyController::class, 'index']);
             Route::get('/{id}/cash-summary', [DeliveryBoyController::class, 'cashSummary']);
             Route::get('/{id}/orders', [DeliveryBoyController::class, 'orders']);
             Route::get('/{id}/received', [DeliveryBoyController::class, 'received']);
@@ -121,8 +122,8 @@ Route::prefix('v1')->group(function () {
         Route::prefix('products')->group(function () {
             Route::get('/', [ProductController::class, 'index'])->middleware('permission:view-products');
             Route::post('/', [ProductController::class, 'store'])->middleware('permission:manage-products');
-            Route::get('/{id}', [ProductController::class, 'show'])->middleware('permission:view-products');
             Route::get('/by-barcode/{code}/{vendor_id?}', [ProductController::class, 'findByBarcode'])->middleware('permission:view-products');
+            Route::get('/{id}', [ProductController::class, 'show'])->middleware('permission:view-products');
             Route::put('/{id}', [ProductController::class, 'update'])->middleware('permission:manage-products');
             Route::delete('/{id}', [ProductController::class, 'destroy'])->middleware('permission:manage-products');
         });
@@ -288,6 +289,15 @@ Route::prefix('v1')->group(function () {
         })->withoutMiddleware('auth:sanctum');
 
         Route::prefix('/reports')->middleware('permission:view-reports')->group(function () {
+            // Enterprise-grade unified reporting API.
+            // JSON:  GET /api/v1/reports/run/{report}?from=2026-06-01 09:00:00&to=2026-06-12 23:59:59
+            // XLSX:  GET /api/v1/reports/export/{report}?format=xlsx&from=...
+            // PDF:   GET /api/v1/reports/export/{report}?format=pdf&orientation=landscape&from=...
+            Route::get('/catalog', [EnterpriseReportController::class, 'catalog']);
+            Route::get('/run/{report}', [EnterpriseReportController::class, 'show']);
+            Route::get('/export/{report}', [EnterpriseReportController::class, 'export']);
+
+            // Existing report endpoints kept for backward compatibility with current frontend.
             Route::prefix('/sales')->group(function () {
                 Route::get('/daily-summary', [SalesReportController::class, 'dailySummary']);
                 Route::get('/top-bottom',    [SalesReportController::class, 'topBottom']);

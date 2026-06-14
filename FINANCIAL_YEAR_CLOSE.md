@@ -2,7 +2,12 @@
 
 This project has an Artisan command for closing a financial year by creating a new SQLite database for the next year.
 
-The command does not modify the current live database and does not automatically change `.env`. It creates a fresh database that contains setup/master data, current stock, and opening balances from the previous year.
+The command does not modify the current live database and does not automatically change `.env`. It creates a new database that contains setup/master data, current stock, and opening balances from the previous year.
+
+The command is branch-safe and supports two modes:
+
+1. **All-branches close** — closes the financial year for every branch.
+2. **Specific-branch close** — closes only the selected branch, while all other branches keep their existing transaction/history records in the new database.
 
 ## Command
 
@@ -22,6 +27,34 @@ This closes the year up to `2026-12-31` and creates:
 database/financial_years/pos_2027.sqlite
 ```
 
+## Specific-branch close
+
+Close only one branch by ID:
+
+```bash
+php artisan financial-year:close 2026 --branch-id=3
+```
+
+You can also close by exact branch name:
+
+```bash
+php artisan financial-year:close 2026 --branch="Main Branch"
+```
+
+For a branch-specific close, the default target path includes the branch ID:
+
+```text
+database/financial_years/pos_2027_branch_3_closed.sqlite
+```
+
+Important behavior:
+
+- The target database still contains **all branches**.
+- The selected branch's old transaction history is not copied.
+- The selected branch receives opening journal balances for the new financial year.
+- Every other branch's sales, purchases, receipts, cash transactions, stock movements, journal history, and related records are copied as-is.
+- When you point `.env` to this new database, Branch 3 will be closed into the new year while all other branches remain exactly as they were.
+
 ## Recommended Flow
 
 First run a dry run:
@@ -30,12 +63,20 @@ First run a dry run:
 php artisan financial-year:close 2026 --dry-run
 ```
 
+For one branch:
+
+```bash
+php artisan financial-year:close 2026 --branch-id=3 --dry-run
+```
+
 Check the output carefully. It will show:
 
 - source database
 - closing date
+- scope: all branches or selected branch
 - target database path
-- master tables that will be copied
+- master/setup tables copied
+- for branch-specific close, transaction/history rows kept for other branches
 - opening balance group count
 - opening balance raw total
 
@@ -43,6 +84,12 @@ If everything looks correct, create the new database:
 
 ```bash
 php artisan financial-year:close 2026
+```
+
+Or for one branch:
+
+```bash
+php artisan financial-year:close 2026 --branch-id=3
 ```
 
 After the command finishes, update `.env` only when you are ready to start working in the new financial year:
@@ -59,7 +106,7 @@ php artisan config:clear
 
 ## What Gets Copied
 
-The new database keeps master/setup data:
+Master/setup data is always copied for the full company:
 
 - account types
 - accounts
@@ -74,9 +121,13 @@ The new database keeps master/setup data:
 - products
 - product stocks
 
-## What Does Not Get Copied
+For a specific-branch close, these master/setup tables are **not reduced to one branch**. They are copied for all branches so the new database remains a complete company database.
 
-Old transaction history is not copied:
+## Transaction History Behavior
+
+### All-branches close
+
+Old transaction history is not copied for any branch:
 
 - sales
 - sale items
@@ -89,8 +140,28 @@ Old transaction history is not copied:
 - stock movements
 - old journal entries
 - old journal postings
+- delivery boy received entries
 
-This keeps the new year database smaller and cleaner.
+Opening balances are created for every branch.
+
+### Specific-branch close
+
+For the selected branch, old transaction history is not copied and opening balances are created.
+
+For all other branches, old transaction history **is copied as-is** so they continue unchanged.
+
+Example:
+
+```bash
+php artisan financial-year:close 2026 --branch-id=1
+```
+
+Result:
+
+```text
+Branch 1       => closed into opening balances for new year
+Branch 2,3,... => all existing records remain available in the new database
+```
 
 ## Opening Balances
 
@@ -107,6 +178,10 @@ This allows reports in the new year to calculate opening balances correctly when
 ```
 
 Balance sheet accounts are carried forward. Income and expense accounts are closed into retained earnings.
+
+For an all-branches close, one opening journal entry is created per branch with balances.
+
+For a branch-specific close, only the selected branch's journal postings are grouped and carried into the target database.
 
 Default retained earnings account:
 
@@ -133,6 +208,18 @@ php artisan financial-year:close 2026 --date=2026-06-30
 ```
 
 The date must be inside the year being closed.
+
+### Close Specific Branch
+
+```bash
+php artisan financial-year:close 2026 --branch-id=3
+```
+
+or:
+
+```bash
+php artisan financial-year:close 2026 --branch="Main Branch"
+```
 
 ### Custom Target Database
 
@@ -161,12 +248,15 @@ php artisan financial-year:close 2026 --dry-run
 ## Important Notes
 
 - Take a backup of the current database before closing the year.
-- Run this command after all sales, returns, purchases, payments, and adjustments for the closing year are completed.
+- Run this command after all sales, returns, purchases, payments, and adjustments for the closing branch/year are completed.
 - The command currently supports SQLite database files.
 - The current `.env` is not changed automatically.
 - The old database remains available for historical reports and audit checking.
+- For branch-specific close, the target database is still a full company database; only the selected branch is financially closed.
 
 ## Quick Example
+
+All branches:
 
 ```bash
 php artisan financial-year:close 2026 --dry-run
@@ -174,8 +264,10 @@ php artisan financial-year:close 2026
 php artisan config:clear
 ```
 
-Then update `.env` to point to:
+Single branch close while preserving all other branch history:
 
-```text
-C:\xampp\htdocs\pos-backend\database\financial_years\pos_2027.sqlite
+```bash
+php artisan financial-year:close 2026 --branch-id=3 --dry-run
+php artisan financial-year:close 2026 --branch-id=3
+php artisan config:clear
 ```

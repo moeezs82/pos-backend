@@ -5,16 +5,20 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
 use App\Models\User;
+use App\Services\BranchContextService;
+use App\Services\BranchRoleService;
+use App\Services\DeliveryBoyCashService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
 {
-    public function login(Request $request)
+    public function login(Request $request, DeliveryBoyCashService $cashService)
     {
         $credentials = $request->validate([
-            'email'    => 'required|email',
-            'password' => 'required|string'
+            'email' => 'required|email',
+            'password' => 'required|string',
         ]);
 
         $user = User::where('email', $credentials['email'])->first();
@@ -27,24 +31,30 @@ class AuthController extends Controller
             return response()->json(['message' => 'User is inactive'], 403);
         }
 
+        $user->load('roles:id,name');
+
         // Create Sanctum Token
         $token = $user->createToken('pos-token', ['*'], now()->addDays(6))->plainTextToken;
 
         $data = [
             'token' => $token,
-            'user'  => [
-                'id'    => $user->id,
-                'name'  => $user->name,
-                'email' => $user->email,
-                'role'  => $user->getRoleNames(), // from Spatie
-            ]
+            'user' => $this->userPayload($user, $cashService),
         ];
+
         return ApiResponse::success($data, 'Login successful');
+    }
+
+    public function me(Request $request, DeliveryBoyCashService $cashService)
+    {
+        $user = $request->user()->load('roles:id,name');
+
+        return ApiResponse::success($this->userPayload($user, $cashService), 'User fetched successfully');
     }
 
     public function logout(Request $request)
     {
         $request->user()->tokens()->delete();
+
         return ApiResponse::success(null, 'Logged out successfully');
     }
 
@@ -64,5 +74,59 @@ class AuthController extends Controller
         return ApiResponse::success([
             'ok' => $ok,
         ], $ok ? 'OK' : 'Invalid password');
+    }
+
+    private function userPayload(User $user, DeliveryBoyCashService $cashService): array
+    {
+        $branchRoles = app(BranchRoleService::class);
+        $roles = $branchRoles->publicRoleNamesForUser($user);
+
+        $branchContext = app(BranchContextService::class);
+        $branchId = $user->branch_id ? (int) $user->branch_id : null;
+
+        $payload = [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'phone' => $user->phone ?? null,
+            'branch_id' => $branchId,
+            'branch' => $branchContext->branchPayload($branchId),
+            'is_master_admin' => $branchContext->isMasterAdmin($user),
+            'is_active' => (bool) $user->is_active,
+            'role' => $roles,
+            'roles' => $roles,
+        ];
+
+        if ($roles->contains(fn ($role) => User::normalizeRoleName((string) $role) === User::normalizeRoleName('delivery'))) {
+            $summary = $cashService->summaryForUser($user);
+            $payload['delivery_cash_summary'] = $summary;
+            $payload['balance'] = $summary['balance'];
+        }
+
+        return $payload;
+    }
+
+    public function switchBranch(Request $request, BranchContextService $branchContext, DeliveryBoyCashService $cashService)
+    {
+        if (!$branchContext->isMasterAdmin($request->user())) {
+            throw ValidationException::withMessages([
+                'branch_id' => ['Only master admin can switch branches.'],
+            ]);
+        }
+
+        $data = $request->validate([
+            'branch_id' => ['required', 'integer', 'exists:branches,id'],
+        ]);
+
+        $request->user()->forceFill([
+            'branch_id' => (int) $data['branch_id'],
+        ])->save();
+
+        $user = $request->user()->fresh()->load('roles:id,name');
+
+        return ApiResponse::success([
+            'user' => $this->userPayload($user, $cashService),
+            'active_branch' => $branchContext->branchPayload((int) $data['branch_id']),
+        ], 'Branch switched successfully');
     }
 }

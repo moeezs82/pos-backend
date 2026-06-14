@@ -2,27 +2,38 @@
 
 namespace Database\Seeders;
 
+use App\Models\Branch;
 use App\Models\User;
-// use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Hash;
 
 class DatabaseSeeder extends Seeder
 {
-    /**
-     * Seed the application's database.
-     */
     public function run(): void
     {
-        // // User::factory(10)->create();
-
-        // User::factory()->create([
-        //     'name' => 'Test User',
-        //     'email' => 'test@example.com',
-        // ]);
+        Branch::firstOrCreate(
+            ['name' => 'Main Branch'],
+            ['location' => 'Main Location', 'is_active' => true]
+        );
 
         $this->call([
             RolePermissionSeeder::class,
             AccountSeeder::class,
         ]);
+
+        $master = User::firstOrCreate(
+            ['email' => 'admin@pos.local'],
+            [
+                'name' => 'Master Admin',
+                'phone' => null,
+                'password' => Hash::make('password'),
+                'branch_id' => null,
+                'is_active' => true,
+            ]
+        );
+
+        if (method_exists($master, 'syncRoles')) {
+            $master->syncRoles(['master admin']);
+        }
     }
 }

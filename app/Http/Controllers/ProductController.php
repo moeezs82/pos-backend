@@ -48,8 +48,6 @@ class ProductController extends Controller
         // 📄 Pagination (default 15 per page)
         $perPage = $request->get('per_page', 15);
         $products = $query->paginate($perPage);
-        dd($products);
-
         return response()->json($products);
     }
 }

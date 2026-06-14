@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
 use App\Models\Sale;
+use App\Services\BranchContextService;
 use App\Services\CustomerPaymentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -12,9 +13,10 @@ use Illuminate\Validation\Rule;
 
 class PaymentController extends Controller
 {
-    public function store(Request $request, $saleId, CustomerPaymentService $cps)
+    public function store(Request $request, $saleId, CustomerPaymentService $cps, BranchContextService $branches)
     {
         $sale = Sale::findOrFail($saleId);
+        $branches->assertCanAccessBranch($request, $sale->branch_id ? (int) $sale->branch_id : null);
 
         $data = $request->validate([
             'amount'      => 'required|numeric|min:1',
@@ -69,9 +71,10 @@ class PaymentController extends Controller
     //     });
     // }
 
-    public function destroy($saleId, $paymentId)
+    public function destroy(Request $request, BranchContextService $branches, $saleId, $paymentId)
     {
         $sale    = Sale::findOrFail($saleId);
+        $branches->assertCanAccessBranch($request, $sale->branch_id ? (int) $sale->branch_id : null);
         $payment = $sale->payments()->findOrFail($paymentId);
 
         return DB::transaction(function () use ($sale, $payment) {

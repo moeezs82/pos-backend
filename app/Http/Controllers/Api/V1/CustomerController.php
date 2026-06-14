@@ -7,23 +7,25 @@ use App\Http\Requests\CustomerRequest;
 use App\Http\Resources\CustomerResource;
 use App\Http\Response\ApiResponse;
 use App\Models\Customer;
+use App\Services\BranchContextService;
 use App\Services\CustomerPaymentService;
 use App\Services\LedgerService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
 
 class CustomerController extends Controller
 {
-    public function index(Request $request)
+    public function index(Request $request, BranchContextService $branches)
     {
         // ---- Inputs ----
         $page     = max(1, (int)$request->get('page', 1));
         $perPage  = max(1, min(500, (int)$request->get('per_page', 15)));
         $search   = trim((string)$request->get('search', ''));
         $includeBalance = filter_var($request->boolean('include_balance'), FILTER_VALIDATE_BOOLEAN);
-        $branchId = $request->integer('branch_id'); // optional
+        $branchId = $branches->effectiveBranchId($request); // optional
 
         // If you prefer an explicit flag name like ?with_balance=1, use that instead:
         // $includeBalance = $request->boolean('with_balance');
@@ -38,6 +40,17 @@ class CustomerController extends Controller
                     ->orWhere('email',      'like', "%{$search}%")
                     ->orWhere('phone',      'like', "%{$search}%");
             });
+        }
+
+        if (Schema::hasColumn('customers', 'branch_id')) {
+            $effectiveBranchId = $branches->effectiveBranchId($request);
+            if (!$branches->isMasterAdmin($request->user()) && $effectiveBranchId) {
+                $idQuery->where(fn ($q) => $q->where('branch_id', $effectiveBranchId));
+                // $idQuery->where(fn ($q) => $q->where('branch_id', $effectiveBranchId)->orWhereNull('branch_id'));
+            } elseif ($branches->isMasterAdmin($request->user()) && $request->filled('branch_id')) {
+                $idQuery->where(fn ($q) => $q->where('branch_id', $effectiveBranchId));
+                // $idQuery->where(fn ($q) => $q->where('branch_id', $effectiveBranchId)->orWhereNull('branch_id'));
+            }
         }
 
         // Light + indexable sort (tweak to your indexed columns)
@@ -155,20 +168,25 @@ class CustomerController extends Controller
         ], 'Customers fetched successfully');
     }
 
-    public function store(CustomerRequest $request)
+    public function store(CustomerRequest $request, BranchContextService $branches)
     {
         $data = $request->validated();
 
         // if (isset($data['password'])) {
         //     $data['password'] = Hash::make($data['password']);
         // }
+        $data['branch_id'] = $branches->requireBranchId($request);
         $customer = Customer::create($data);
         return ApiResponse::success(new CustomerResource($customer), 'Customer created successfully');
     }
 
-    public function show(Request $request, Customer $customer)
+    public function show(Request $request, Customer $customer, BranchContextService $branches)
     {
-        $branchId   = $request->integer('branch_id');
+        if ($customer->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $customer->branch_id);
+        }
+
+        $branchId   = $branches->effectiveBranchId($request);
         $partyTypes = ['customer', \App\Models\Customer::class];
 
         $ar = DB::table('journal_postings as jp')
@@ -193,9 +211,14 @@ class CustomerController extends Controller
         return ApiResponse::success($res, 'Customer fetched successfully');
     }
 
-    public function update(CustomerRequest $request, Customer $customer)
+    public function update(CustomerRequest $request, Customer $customer, BranchContextService $branches)
     {
+        if ($customer->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $customer->branch_id);
+        }
+
         $data = $request->validated();
+        $data['branch_id'] = $customer->branch_id ?: $branches->requireBranchId($request);
         if (isset($data['password'])) {
             $data['password'] = Hash::make($data['password']);
         }
@@ -203,17 +226,24 @@ class CustomerController extends Controller
         return ApiResponse::success(new CustomerResource($customer), 'Customer updated successfully');
     }
 
-    public function destroy(Customer $customer)
+    public function destroy(Request $request, Customer $customer, BranchContextService $branches)
     {
+        if ($customer->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $customer->branch_id);
+        }
+
         $customer->delete();
         return ApiResponse::success(null, 'Customer deleted successfully');
     }
 
-    public function sales(Request $request, Customer $customer)
+    public function sales(Request $request, Customer $customer, BranchContextService $branches)
     {
         $page     = max(1, (int)$request->get('page', 1));
         $perPage  = max(1, min(100, (int)$request->get('per_page', 15)));
-        $branchId = $request->integer('branch_id');
+        if ($customer->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $customer->branch_id);
+        }
+        $branchId = $branches->effectiveBranchId($request);
 
         // Count
         $countQ = DB::table('sales')->where('customer_id', $customer->id);
@@ -254,11 +284,14 @@ class CustomerController extends Controller
         ], 'Customer sales fetched successfully');
     }
 
-    public function receipts(Request $request, Customer $customer)
+    public function receipts(Request $request, Customer $customer, BranchContextService $branches)
     {
         $page     = max(1, (int)$request->get('page', 1));
         $perPage  = max(1, min(100, (int)$request->get('per_page', 15)));
-        $branchId = $request->integer('branch_id');
+        if ($customer->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $customer->branch_id);
+        }
+        $branchId = $branches->effectiveBranchId($request);
 
         // We support both 'customer' and FQCN saved in party_type
         $partyTypes = ['customer', \App\Models\Customer::class];
@@ -270,9 +303,9 @@ class CustomerController extends Controller
             ->where('jp.party_id', $customer->id)
             ->where('jp.credit', '>', 0);
 
-        // if ($branchId) {
-        //     $countQ->where('je.branch_id', $branchId);
-        // }
+        if ($branchId) {
+            $countQ->where('je.branch_id', $branchId);
+        }
 
         $total = (clone $countQ)->count();
 
@@ -296,7 +329,7 @@ class CustomerController extends Controller
             ->whereIn('jp.party_type', $partyTypes)
             ->where('jp.party_id', $customer->id)
             ->where('jp.credit', '>', 0)
-            // ->when($branchId, fn($q) => $q->where('je.branch_id', $branchId))
+            ->when($branchId, fn($q) => $q->where('je.branch_id', $branchId))
             ->orderByDesc(DB::raw('COALESCE(jp.created_at, je.entry_date, je.created_at)'))
             ->orderByDesc('jp.id')
             ->skip(($page - 1) * $perPage)
@@ -325,11 +358,14 @@ class CustomerController extends Controller
         ], 'Customer receipts fetched successfully (from journal)');
     }
 
-    public function ledger(Request $request, \App\Models\Customer $customer)
+    public function ledger(Request $request, \App\Models\Customer $customer, BranchContextService $branches)
     {
         $page     = max(1, (int)$request->get('page', 1));
         $perPage  = max(1, min(100, (int)$request->get('per_page', 15)));
-        $branchId = $request->integer('branch_id');
+        if ($customer->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $customer->branch_id);
+        }
+        $branchId = $branches->effectiveBranchId($request);
 
         // Optional date range
         $from = $request->date('from'); // e.g. 2025-10-01
@@ -343,14 +379,15 @@ class CustomerController extends Controller
             'from' => $from,
             'to' => $to,
             'page' => $page,
-            'per_page' => $perPage
+            'per_page' => $perPage,
+            'branch_id' => $branchId,
         ]);
 
         $label = ucfirst($data['party_type']) . ' ledger fetched successfully';
         return ApiResponse::success($data, $label);
     }
 
-    public function storeReceipt(Request $request, Customer $customer, CustomerPaymentService $cps)
+    public function storeReceipt(Request $request, Customer $customer, CustomerPaymentService $cps, BranchContextService $branches)
     {
         $data = $request->validate([
             'amount'      => 'required|numeric|min:1',
@@ -360,9 +397,13 @@ class CustomerController extends Controller
             'received_by' => 'nullable|integer',
             'received_on' => 'nullable|date'
         ]);
+        if ($customer->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $customer->branch_id);
+        }
+
         $reference = $data['reference'] ?? "Payment received by " . auth()->user()->name;
         $data['customer_id'] = $customer->id;
-        $data['branch_id'] = $request->branch_id;
+        $data['branch_id'] = $branches->requireBranchId($request);
         $data['reference'] = $reference;
         $data['memo'] = $reference;
 

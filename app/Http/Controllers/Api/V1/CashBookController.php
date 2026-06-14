@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
 use App\Models\CashTransaction;
 use App\Services\CashSyncService;
+use App\Services\BranchContextService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
@@ -31,7 +32,7 @@ class CashBookController extends Controller
      * - search (reference|voucher_no|note) (optional)
      * - per_page (default 50, max 200), page
      */
-    public function index(Request $request)
+    public function index(Request $request, BranchContextService $branches)
     {
         $request->validate([
             'account_id' => ['nullable', 'exists:accounts,id'],
@@ -49,7 +50,7 @@ class CashBookController extends Controller
         ]);
 
         $accountId = $request->account_id ? (int)$request->account_id : null;
-        $branchId  = $request->branch_id ? (int)$request->branch_id : null;
+        $branchId  = $branches->effectiveBranchId($request);
         $from      = $request->date_from; // nullable
         $to        = $request->date_to;   // nullable
         $status    = $request->status ?? 'approved';
@@ -222,7 +223,7 @@ class CashBookController extends Controller
         ]);
     }
 
-    public function dailySummary(Request $request)
+    public function dailySummary(Request $request, BranchContextService $branches)
     {
         $request->validate([
             'date_from' => ['nullable', 'date'],
@@ -232,7 +233,7 @@ class CashBookController extends Controller
             'page'      => ['nullable', 'integer', 'min:1'],
         ]);
 
-        $branch_id    = $request->branch_id;
+        $branch_id    = $branches->effectiveBranchId($request);
         $from    = $request->date_from;
         $to      = $request->date_to;
         $perPage = max(1, min((int)($request->get('per_page', 30)), 200));
@@ -241,14 +242,14 @@ class CashBookController extends Controller
         $opening = 0.0;
         if ($from) {
             $openIn = DB::table('cash_transactions')
-                ->where('branch_id', $branch_id)
+                ->when($branch_id, fn($q) => $q->where('branch_id', $branch_id))
                 ->where('status', 'approved')
                 ->where('txn_date', '<', $from)
                 ->whereIn('type', ['receipt', 'transfer_in'])
                 ->sum('amount');
 
             $openOut = DB::table('cash_transactions')
-                ->where('branch_id', $branch_id)
+                ->when($branch_id, fn($q) => $q->where('branch_id', $branch_id))
                 ->where('status', 'approved')
                 ->where('txn_date', '<', $from)
                 ->whereIn('type', ['payment', 'transfer_out', 'expense'])
@@ -367,7 +368,7 @@ class CashBookController extends Controller
         ]);
     }
 
-    public function dailyDetails(Request $request)
+    public function dailyDetails(Request $request, BranchContextService $branches)
     {
         $request->validate([
             'date'        => ['nullable', 'date'],
@@ -388,13 +389,14 @@ class CashBookController extends Controller
         $sort     = $request->get('sort', 'created_at');
         $order    = $request->get('order', 'asc');
         $search   = trim((string)$request->get('search', ''));
+        $branchId = $branches->effectiveBranchId($request);
 
         // ---------- Opening balance before the day ----------
         $openIn = DB::table('cash_transactions')
             ->where('status', 'approved')
             ->where('txn_date', '<', $day)
             ->when($request->account_id, fn($q, $v) => $q->where('account_id', $v))
-            ->when($request->branch_id,  fn($q, $v) => $q->where('branch_id', $v))
+            ->when($branchId, fn($q) => $q->where('branch_id', $branchId))
             ->whereIn('type', ['receipt', 'transfer_in'])
             ->sum('amount');
 
@@ -402,7 +404,7 @@ class CashBookController extends Controller
             ->where('status', 'approved')
             ->where('txn_date', '<', $day)
             ->when($request->account_id, fn($q, $v) => $q->where('account_id', $v))
-            ->when($request->branch_id,  fn($q, $v) => $q->where('branch_id', $v))
+            ->when($branchId, fn($q) => $q->where('branch_id', $branchId))
             ->whereIn('type', ['payment', 'transfer_out', 'expense'])
             ->sum('amount');
 
@@ -443,7 +445,7 @@ class CashBookController extends Controller
             ->where('t.status', 'approved')
             ->whereDate('t.txn_date', '=', $day)
             ->when($request->account_id, fn($q, $v) => $q->where('t.account_id', $v))
-            ->when($request->branch_id,  fn($q, $v) => $q->where('t.branch_id', $v))
+            ->when($branchId, fn($q) => $q->where('t.branch_id', $branchId))
             ->when($request->type,       fn($q, $v) => $q->where('t.type', $v))
             ->when($request->method,     fn($q, $v) => $q->where('t.method', $v))
 
@@ -624,7 +626,7 @@ class CashBookController extends Controller
             ],
             'filters' => [
                 'account_id' => $request->account_id,
-                'branch_id'  => $request->branch_id,
+                'branch_id'  => $branchId,
                 'type'       => $request->type,
                 'method'     => $request->method,
                 'party_kind' => $request->party_kind,
@@ -647,14 +649,14 @@ class CashBookController extends Controller
      * Either send account_id OR method (which will map to an account).
      * (So yes, you can do it WITHOUT account_id — just pass method.)
      */
-    public function storeExpense(Request $request)
+    public function storeExpense(Request $request, BranchContextService $branches)
     {
         $data = $request->validate([
             'account_id' => ['nullable', 'exists:accounts,id'],
             'method'     => ['nullable', 'string', 'max:50'], // required if account_id is null
             'amount'     => ['required', 'numeric', 'min:0.01'],
             'txn_date'   => ['nullable', 'date'],
-            // 'branch_id'  => ['nullable', 'exists:branches,id'],
+            'branch_id'  => ['nullable', 'exists:branches,id'],
             'reference'  => ['nullable', 'string', 'max:190'],
             'note'       => ['nullable', 'string'],
             'status'     => ['nullable', Rule::in(['pending', 'approved'])],
@@ -665,6 +667,8 @@ class CashBookController extends Controller
         if (empty($data['account_id']) && empty($data['method'])) {
             return ApiResponse::error('Either account_id or method is required.', 422);
         }
+
+        $data['branch_id'] = $branches->requireBranchId($request);
 
         $txn = $this->service->createExpense($data);
 

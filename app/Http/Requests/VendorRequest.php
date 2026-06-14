@@ -22,6 +22,7 @@ class VendorRequest extends FormRequest
     public function rules(): array
     {
         return [
+            'branch_id'  => 'nullable|exists:branches,id',
             'first_name' => 'required|string|max:100',
             'last_name'  => 'nullable|string|max:100',
             'tax_id'  => 'nullable|string|max:100',

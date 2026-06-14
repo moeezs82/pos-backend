@@ -16,6 +16,7 @@ class VendorResource extends JsonResource
     {
         return [
             'id'         => $this->id,
+            'branch_id'  => $this->branch_id,
             'first_name' => $this->first_name,
             'last_name'  => $this->last_name,
             'company_name'  => $this->company_name,
