@@ -5,13 +5,14 @@ use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BranchController;
 use App\Http\Controllers\Api\V1\BrandController;
 use App\Http\Controllers\Api\V1\CashBookController;
+use App\Http\Controllers\Api\V1\CashLedgerController;
 use App\Http\Controllers\Api\V1\CategoryController;
 use App\Http\Controllers\Api\V1\CustomerController;
-use App\Http\Controllers\Api\V1\DayBookController;
 use App\Http\Controllers\Api\V1\DeliveryBoyController;
 use App\Http\Controllers\Api\V1\EnterpriseReportController;
 use App\Http\Controllers\Api\V1\ExpenseController;
 use App\Http\Controllers\Api\V1\PaymentController;
+use App\Http\Controllers\Api\V1\PrinterConfigController;
 use App\Http\Controllers\Api\V1\ProductController;
 use App\Http\Controllers\Api\V1\PurchaseClaimController;
 use App\Http\Controllers\Api\V1\PurchaseController;
@@ -224,15 +225,30 @@ Route::prefix('v1')->group(function () {
             Route::get('/', [CashBookController::class, 'index']);
             Route::get('/daily-summary', [CashBookController::class, 'dailySummary']);
             Route::post('/expense', [CashBookController::class, 'storeExpense'])->middleware('permission:manage-cashbook');
-            Route::get('/day-details', [CashbookController::class, 'dailyDetails']);
+            Route::get('/day-details', [CashBookController::class, 'dailyDetails']);
         });
+
+        // Unified Cash Ledger: every cash movement (customer receipts, vendor
+        // payments, expenses, refunds, claims, Qameti, loans). /transactions
+        // and /cash-flow read across the whole journal; / and /{entry} are
+        // for the manually-recorded non-sales entries (Qameti, loans, etc.).
+        Route::prefix('cash-ledger')->middleware('permission:view-cashbook')->group(function () {
+            Route::get('/',             [CashLedgerController::class, 'index']);
+            Route::get('/transactions', [CashLedgerController::class, 'transactions']); // unified ledger feed
+            Route::get('/cash-flow',    [CashLedgerController::class, 'cashFlow']);
+            Route::get('/{entry}',      [CashLedgerController::class, 'show']);
+
+            Route::post('/',             [CashLedgerController::class, 'store'])->middleware('permission:manage-cashbook');
+            Route::post('/{entry}/void', [CashLedgerController::class, 'void'])->middleware('permission:manage-cashbook');
+        });
+
         Route::post('/expenses', [ExpenseController::class, 'store']);
+
+        // Day Book: day-by-day view of the SAME unified cash ledger
+        // (every cash movement: receipts, vendor payments, expenses, Qameti, loans, refunds)
         Route::prefix('daybook')->middleware('permission:view-cashbook')->group(function () {
-            Route::get('/', [DayBookController::class, 'index']);
-            Route::get('/day-details', [DaybookController::class, 'dayDetails']);
-            // Route::get('/daily-summary', [CashBookController::class, 'dailySummary']);
-            // Route::post('/expense', [CashBookController::class, 'storeExpense'])->middleware('permission:manage-cashbook');
-            // Route::get('/day-details', [CashbookController::class, 'dailyDetails']);
+            Route::get('/',            [CashLedgerController::class, 'dayBook']);       // per-day opening/in/out/closing
+            Route::get('/day-details', [CashLedgerController::class, 'dayBookDetails']); // one day's transactions, labelled
         });
 
         Route::post('/app-lock-status', function () {
@@ -262,31 +278,14 @@ Route::prefix('v1')->group(function () {
             ]);
         })->withoutMiddleware('auth:sanctum');
 
-        Route::post('/printer-config', function (\Illuminate\Http\Request $request) {
-            // optional if later you want branch-wise config
-            $branchId = $request->input('branch_id');
-
-            // for now static values
-            $mainPrinterName = 'Microsoft Print to PDF';
-            $kitchenPrinterName = 'SLK-TE201';
-            $isKitchenPrintEnabled = true;
-
-            $shopName = 'Pizza 360';
-            $shopAddress = 'Pizza 360 Miani Road Sukkur';
-            $shopPhone = '+923702183106';
-
-            return response()->json([
-                'success' => true,
-                'data' => [
-                    'main_printer_name' => $mainPrinterName,
-                    'kitchen_printer_name' => $kitchenPrinterName,
-                    'is_kitchen_print_enabled' => $isKitchenPrintEnabled,
-                    'shop_name' => $shopName,
-                    'shop_address' => $shopAddress,
-                    'shop_phone' => $shopPhone,
-                ],
-            ]);
-        })->withoutMiddleware('auth:sanctum');
+        // Printer settings: real, persisted, branch-aware (replaces the old
+        // hardcoded placeholder values). Any signed-in user can read the
+        // settings for their own branch; only master admin can write them.
+        Route::post('/printer-config', [PrinterConfigController::class, 'show']);
+        Route::get('/printer-config', [PrinterConfigController::class, 'show']);
+        Route::get('/printer-config/all', [PrinterConfigController::class, 'index']);
+        Route::post('/printer-config/save', [PrinterConfigController::class, 'save'])->name('printer-config.save');
+        Route::post('/printer-config/test', [PrinterConfigController::class, 'test'])->name('printer-config.test');
 
         Route::prefix('/reports')->middleware('permission:view-reports')->group(function () {
             // Enterprise-grade unified reporting API.

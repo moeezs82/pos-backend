@@ -87,7 +87,7 @@ class LedgerService
             if ($partyId) $openingQ->where('jp.party_id', $partyId);
             if ($branchId) $openingQ->where('je.branch_id', $branchId);
 
-            $openingQ->whereRaw("$effDateExpr < ?", [date_format($from, 'Y-m-d 00:00:00')]);
+            $openingQ->whereRaw("DATE($effDateExpr) < ?", [date_format($from, 'Y-m-d')]);
 
             $opening = (float) $openingQ
                 ->selectRaw('COALESCE(SUM(jp.debit - jp.credit), 0) as bal')
@@ -104,8 +104,8 @@ class LedgerService
 
         if ($partyId)  $baseQ->where('jp.party_id', $partyId);
         if ($branchId) $baseQ->where('je.branch_id', $branchId);
-        if ($from)     $baseQ->whereRaw("$effDateExpr >= ?", [date_format($from, 'Y-m-d 00:00:00')]);
-        if ($to)       $baseQ->whereRaw("$effDateExpr <= ?", [date_format($to, 'Y-m-d 23:59:59')]);
+        if ($from)     $baseQ->whereRaw("DATE($effDateExpr) >= ?", [date_format($from, 'Y-m-d')]);
+        if ($to)       $baseQ->whereRaw("DATE($effDateExpr) <= ?", [date_format($to, 'Y-m-d')]);
 
         $total = (clone $baseQ)->count();
 
@@ -141,8 +141,8 @@ class LedgerService
 
             if ($partyId)  $priorQ->where('jp.party_id', $partyId);
             if ($branchId) $priorQ->where('je.branch_id', $branchId);
-            if ($from)     $priorQ->whereRaw("$effDateExpr >= ?", [date_format($from, 'Y-m-d 00:00:00')]);
-            if ($to)       $priorQ->whereRaw("$effDateExpr <= ?", [date_format($to, 'Y-m-d 23:59:59')]);
+            if ($from)     $priorQ->whereRaw("DATE($effDateExpr) >= ?", [date_format($from, 'Y-m-d')]);
+            if ($to)       $priorQ->whereRaw("DATE($effDateExpr) <= ?", [date_format($to, 'Y-m-d')]);
 
             $priorQ->where(function ($q) use ($effDateExpr, $firstDate, $firstId) {
                 $q->whereRaw("$effDateExpr < ?", [$firstDate])

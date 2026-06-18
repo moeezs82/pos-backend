@@ -28,10 +28,25 @@ class ResolveBranchContext
             }
 
             /*
-             * Do not inject current branch into switch-branch endpoint.
-             * That endpoint must receive the branch_id selected by master admin.
+             * Do not inject current branch into endpoints where the caller is
+             * explicitly choosing a branch_id that has nothing to do with
+             * which branch they're currently working in:
+             *   - switch-branch: master admin picking which branch to work in
+             *   - printer-config save/test: master admin choosing which branch
+             *     (or the global default, branch_id = null) a printer setting
+             *     applies to
+             * Without this, mergeEffectiveBranchIntoRequest() below would
+             * silently overwrite their actual selection with their own
+             * current branch_id before the controller ever sees it.
              */
-            if (!$request->is('api/v1/switch-branch') && !$request->routeIs('switch-branch')) {
+            $branchChoiceIsExplicit = $request->is('api/v1/switch-branch')
+                || $request->routeIs('switch-branch')
+                || $request->is('api/v1/printer-config/save')
+                || $request->is('api/v1/printer-config/test')
+                || $request->routeIs('printer-config.save')
+                || $request->routeIs('printer-config.test');
+
+            if (!$branchChoiceIsExplicit) {
                 $this->branches->mergeEffectiveBranchIntoRequest($request);
             } else {
                 $request->attributes->set('effective_branch_id', $this->branches->effectiveBranchId($request));

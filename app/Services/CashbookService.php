@@ -70,7 +70,7 @@ class CashbookService
         $openingQ = DB::table('journal_postings as jp')
             ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
             ->whereIn('jp.account_id', $accountIds)
-            ->whereRaw("$effDateExpr < ?", [$from->format('Y-m-d 00:00:00')]);
+            ->whereRaw("DATE($effDateExpr) < ?", [$from->format('Y-m-d')]);
 
         if ($branchId) $openingQ->where('je.branch_id', $branchId);
 
@@ -88,8 +88,8 @@ class CashbookService
         $entriesQ = DB::table('journal_entries as je')
             ->join('journal_postings as jp', 'jp.journal_entry_id', '=', 'je.id')
             ->leftJoin('accounts as a', 'a.id', '=', 'jp.account_id')
-            ->whereRaw("$effDateExpr >= ?", [$from->format('Y-m-d 00:00:00')])
-            ->whereRaw("$effDateExpr <= ?", [$to->format('Y-m-d 23:59:59')]);
+            ->whereRaw("DATE($effDateExpr) >= ?", [$from->format('Y-m-d')])
+            ->whereRaw("DATE($effDateExpr) <= ?", [$to->format('Y-m-d')]);
 
         if ($branchId) $entriesQ->where('je.branch_id', $branchId);
 

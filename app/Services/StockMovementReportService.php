@@ -75,7 +75,7 @@ class StockMovementReportService
 
         // ---------- Opening quantity before from
         $openingQtyQ = DB::table('stock_movements as sm')
-            ->whereRaw("$effDateExpr < ?", [$from->format('Y-m-d 00:00:00')]);
+            ->whereRaw("DATE($effDateExpr) < ?", [$from->format('Y-m-d')]);
 
         if ($productIds) $openingQtyQ->whereIn('sm.product_id', $productIds);
         if ($branchIds)  $openingQtyQ->whereIn('sm.branch_id', $branchIds);
@@ -95,7 +95,7 @@ class StockMovementReportService
                       ->where('je.reference_type', '=', $refType);
                 })
                 ->where('jp.account_id', $inventoryAccountId)
-                ->whereRaw("COALESCE(jp.created_at, je.entry_date, je.created_at) < ?", [$from->format('Y-m-d 00:00:00')]);
+                ->whereRaw("DATE(COALESCE(jp.created_at, je.entry_date, je.created_at)) < ?", [$from->format('Y-m-d')]);
 
             if ($productIds) $openValQ->whereIn('sm.product_id', $productIds);
             if ($branchIds)  $openValQ->whereIn('sm.branch_id', $branchIds);
@@ -111,8 +111,8 @@ class StockMovementReportService
         $baseQ = DB::table('stock_movements as sm')
             ->leftJoin('products as p', 'p.id', '=', 'sm.product_id')
             ->leftJoin('branches as b', 'b.id', '=', 'sm.branch_id')
-            ->whereRaw("$effDateExpr >= ?", [$from->format('Y-m-d 00:00:00')])
-            ->whereRaw("$effDateExpr <= ?", [$to->format('Y-m-d 23:59:59')]);
+            ->whereRaw("DATE($effDateExpr) >= ?", [$from->format('Y-m-d')])
+            ->whereRaw("DATE($effDateExpr) <= ?", [$to->format('Y-m-d')]);
 
         if ($productIds) $baseQ->whereIn('sm.product_id', $productIds);
         if ($branchIds)  $baseQ->whereIn('sm.branch_id', $branchIds);
