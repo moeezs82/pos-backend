@@ -73,7 +73,7 @@ class PurchaseClaimController extends Controller
 
             // Ensure item exists AND belongs to this purchase_id (checked below too)
             'items.*.purchase_item_id' => ['required', 'integer'],
-            'items.*.quantity'         => ['required', 'integer', 'min:1'],
+            'items.*.quantity'         => ['required', 'numeric', 'min:0.001'],
             'items.*.affects_stock'    => ['nullable', 'boolean'], // default inferred by type
             'items.*.remarks'          => ['nullable', 'string'],
             'items.*.batch_no'         => ['nullable', 'string'],
@@ -134,11 +134,11 @@ class PurchaseClaimController extends Controller
 
             foreach ($data['items'] as $row) {
                 $pi = $purchaseItems[$row['purchase_item_id']];
-                $sold = (int) $pi->quantity;                 // purchased qty
-                $prev = (int) ($alreadyClaimed[$pi->id] ?? 0);
+                $sold = (float) $pi->quantity;                 // purchased qty
+                $prev = (float) ($alreadyClaimed[$pi->id] ?? 0);
                 $remaining = max($sold - $prev, 0);
 
-                $req = (int) $row['quantity'];
+                $req = (float) $row['quantity'];
                 if ($req > $remaining) {
                     $violations[] = "Item #{$pi->id}: requested {$req} exceeds remaining {$remaining} (purchased {$sold}, claimed {$prev}).";
                     continue;
@@ -234,7 +234,7 @@ class PurchaseClaimController extends Controller
                     $this->ensureStockRowAndDecrement(
                         productId: $item->product_id,
                         branchId: $claim->branch_id,
-                        qtyToDecrement: (int) $item->quantity,
+                        qtyToDecrement: (float) $item->quantity,
                         reference: $claim->claim_no
                     );
                 }
@@ -256,11 +256,11 @@ class PurchaseClaimController extends Controller
      *
      * @param int $productId
      * @param int $branchId
-     * @param int $qtyToDecrement
+     * @param float $qtyToDecrement
      * @param string $reference
      * @return void
      */
-    protected function ensureStockRowAndDecrement(int $productId, ?int $branchId, int $qtyToDecrement, string $reference): void
+    protected function ensureStockRowAndDecrement(int $productId, ?int $branchId, float $qtyToDecrement, string $reference): void
     {
         // Ensure exists (one quick exists check + insert if missing)
         $exists = DB::table('product_stocks')
@@ -296,7 +296,7 @@ class PurchaseClaimController extends Controller
             'product_id' => $productId,
             'branch_id'  => $branchId,
             'type'       => 'purchase_claim',
-            'quantity'   => -1 * (int)$qtyToDecrement,
+            'quantity'   => -1 * (float)$qtyToDecrement,
             'reference'  => $reference,
             'created_at' => now(),
             'updated_at' => now(),
@@ -392,7 +392,7 @@ class PurchaseClaimController extends Controller
         foreach ($claim->items as $it) {
             $lineTotal = isset($it->total)
                 ? (float) $it->total
-                : ((float) $it->price * (int) $it->quantity);
+                : ((float) $it->price * (float) $it->quantity);
 
             if ($it->affects_stock) $stockAmount += $lineTotal;
             else                     $nonStockAmount += $lineTotal;
@@ -574,7 +574,7 @@ class PurchaseClaimController extends Controller
                 $this->ensureStockRowAndDecrement(
                     productId: $item->product_id,
                     branchId: $claim->branch_id,
-                    qtyToDecrement: (int) $item->quantity,
+                    qtyToDecrement: (float) $item->quantity,
                     reference: $claim->claim_no
                 );
             }

@@ -2,7 +2,7 @@
 
 namespace App\Services;
 
-use App\Models\{Customer, Sale, StockMovement};
+use App\Models\{Customer, ProductStock, Sale, StockMovement};
 use Illuminate\Support\Facades\DB;
 
 class SalePostingService
@@ -79,8 +79,10 @@ class SalePostingService
 
             DB::table('product_stocks')
                 ->where('product_id', $it->product_id)
-                ->where('branch_id',  $sale->branch_id)
-                ->decrement('quantity', $it->quantity);
+                ->where('branch_id', $sale->branch_id)
+                ->decrement('quantity', $it->quantity, [
+                    'updated_at' => now(),
+                ]);
 
             StockMovement::create([
                 'product_id' => $it->product_id,

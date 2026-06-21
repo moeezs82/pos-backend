@@ -11,14 +11,17 @@ class PrinterSetting extends Model
         'shop_name',
         'shop_address',
         'shop_phone',
+        'footer_lines',
         'active_connection',
         'network_ip',
         'network_port',
         'local_printer_name',
+        'main_invoice_template',
         'kitchen_print_enabled',
         'kitchen_network_ip',
         'kitchen_network_port',
         'kitchen_local_printer_name',
+        'kitchen_invoice_template',
         'updated_by',
     ];
 
@@ -26,6 +29,7 @@ class PrinterSetting extends Model
         'kitchen_print_enabled' => 'boolean',
         'network_port'          => 'integer',
         'kitchen_network_port'  => 'integer',
+        'footer_lines'          => 'array',
     ];
 
     public function branch()

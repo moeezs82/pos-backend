@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Enums\InvoiceTemplate;
 use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
 use App\Models\PrinterSetting;
@@ -17,6 +18,17 @@ use Illuminate\Http\Request;
  */
 class PrinterConfigController extends Controller
 {
+    /**
+     * GET /printer-config/templates — the predefined invoice template
+     * catalog (label, description, paper width, which sections each one
+     * shows). Any signed-in user can read this; it's just a static list,
+     * not a setting.
+     */
+    public function templates()
+    {
+        return ApiResponse::success(['templates' => InvoiceTemplate::catalog()]);
+    }
+
     /**
      * GET (and, for backwards compatibility with the existing app build,
      * POST) /printer-config — the settings the CURRENT user's branch
@@ -64,14 +76,18 @@ class PrinterConfigController extends Controller
             'shop_name'                   => 'nullable|string|max:255',
             'shop_address'                => 'nullable|string|max:255',
             'shop_phone'                  => 'nullable|string|max:50',
+            'footer_lines'                => 'nullable|array|max:10',
+            'footer_lines.*'              => 'string|max:100',
             'active_connection'           => 'required|in:network,local,none',
             'network_ip'                  => 'nullable|string|max:100',
             'network_port'                => 'nullable|integer|min:1|max:65535',
             'local_printer_name'          => 'nullable|string|max:255',
+            'main_invoice_template'       => 'nullable|in:standard,compact,kitchen',
             'kitchen_print_enabled'       => 'boolean',
             'kitchen_network_ip'          => 'nullable|string|max:100',
             'kitchen_network_port'        => 'nullable|integer|min:1|max:65535',
             'kitchen_local_printer_name'  => 'nullable|string|max:255',
+            'kitchen_invoice_template'    => 'nullable|in:standard,compact,kitchen',
         ]);
 
         if ($data['active_connection'] === 'network' && empty($data['network_ip'])) {
@@ -123,16 +139,18 @@ class PrinterConfigController extends Controller
                 'shop_name'                  => '',
                 'shop_address'               => '',
                 'shop_phone'                 => '',
+                'footer_lines'               => [],
                 'active_connection'          => 'none',
                 'network_ip'                 => null,
                 'network_port'               => 9100,
                 'local_printer_name'         => null,
+                'main_invoice_template'      => InvoiceTemplate::STANDARD->value,
                 'kitchen_print_enabled'      => false,
                 'kitchen_network_ip'         => null,
                 'kitchen_network_port'       => 9100,
                 'kitchen_local_printer_name' => null,
-                // Legacy keys the existing app build already expects —
-                // kept so older clients don't break while they update.
+                'kitchen_invoice_template'   => InvoiceTemplate::KITCHEN->value,
+                // Legacy keys the existing app build already expects.
                 'main_printer_name'          => null,
                 'kitchen_printer_name'       => null,
             ];
@@ -148,14 +166,17 @@ class PrinterConfigController extends Controller
             'shop_name'                  => $setting->shop_name ?? '',
             'shop_address'               => $setting->shop_address ?? '',
             'shop_phone'                 => $setting->shop_phone ?? '',
+            'footer_lines'               => $setting->footer_lines ?? [],
             'active_connection'          => $setting->active_connection,
             'network_ip'                 => $setting->network_ip,
             'network_port'               => $setting->network_port,
             'local_printer_name'         => $setting->local_printer_name,
+            'main_invoice_template'      => $setting->main_invoice_template ?? InvoiceTemplate::STANDARD->value,
             'kitchen_print_enabled'      => (bool) $setting->kitchen_print_enabled,
             'kitchen_network_ip'         => $setting->kitchen_network_ip,
             'kitchen_network_port'       => $setting->kitchen_network_port,
             'kitchen_local_printer_name' => $setting->kitchen_local_printer_name,
+            'kitchen_invoice_template'   => $setting->kitchen_invoice_template ?? InvoiceTemplate::KITCHEN->value,
             // Legacy keys for the existing PrinterConfig.fromJson() shape.
             'main_printer_name'          => $mainPrinterName,
             'kitchen_printer_name'       => $setting->kitchen_print_enabled

@@ -22,7 +22,7 @@ class DatabaseSeeder extends Seeder
         ]);
 
         $master = User::firstOrCreate(
-            ['email' => 'admin@pos.local'],
+            ['email' => 'admin@admin.com'],
             [
                 'name' => 'Master Admin',
                 'phone' => null,

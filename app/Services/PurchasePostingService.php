@@ -56,10 +56,10 @@ class PurchasePostingService
             foreach ($receiveRows as $row) {
                 /** @var PurchaseItem $it */
                 $it = $p->items()->lockForUpdate()->findOrFail($row['item_id']);
-                $qtyToReceive = (int) $row['receive_qty'];
+                $qtyToReceive = (float) $row['receive_qty'];
                 if ($qtyToReceive <= 0) continue;
 
-                $remaining = (int)$it->quantity - (int)$it->received_qty;
+                $remaining = (float)$it->quantity - (float)$it->received_qty;
                 $rcv = min($qtyToReceive, max(0, $remaining));
                 if ($rcv <= 0) continue;
 
@@ -76,10 +76,10 @@ class PurchasePostingService
             }
 
             // set receive_status
-            $totalQty     = (int) $p->items()->sum('quantity');
-            $totalRcvQty  = (int) $p->items()->sum('received_qty');
+            $totalQty     = (float) $p->items()->sum('quantity');
+            $totalRcvQty  = (float) $p->items()->sum('received_qty');
             $status = match(true) {
-                $totalRcvQty === 0                => 'ordered',
+                $totalRcvQty == 0                => 'ordered',
                 $totalRcvQty < $totalQty          => 'partial',
                 $totalRcvQty >= $totalQty && $totalQty>0 => 'received',
                 default                           => 'ordered',

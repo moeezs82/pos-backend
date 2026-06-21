@@ -2,17 +2,41 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\DB;
+use App\Models\Product;
+use App\Models\ProductStock;
 
 class InventoryValuationService
 {
-    // Returns current average cost per unit for a product at a branch.
+    /**
+     * Return the current average cost per unit for a product at a branch.
+     *
+     * If the stock record does not exist, create it using the product's
+     * current cost price as the initial average cost.
+     */
     public function avgCost(int $productId, ?int $branchId): float
     {
-        // Replace with your own valuation logic if you store purchases with cost.
-        $row = DB::table('product_stocks')
-            ->where('product_id', $productId)->where('branch_id', $branchId)
-            ->select('avg_cost')->first(); // add avg_cost column in your stocks if not present
-        return (float)($row->avg_cost ?? 0);
+        $stock = ProductStock::query()
+            ->where('product_id', $productId)
+            ->where('branch_id', $branchId)
+            ->first();
+
+        if (!$stock) {
+            $product = Product::query()
+                ->select(['id', 'cost_price'])
+                ->findOrFail($productId);
+
+            $stock = ProductStock::query()->firstOrCreate(
+                [
+                    'product_id' => $productId,
+                    'branch_id' => $branchId,
+                ],
+                [
+                    'quantity' => 0,
+                    'avg_cost' => (float) ($product->cost_price ?? 0),
+                ]
+            );
+        }
+
+        return (float) $stock->avg_cost;
     }
 }

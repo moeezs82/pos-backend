@@ -34,7 +34,7 @@ class StockController extends Controller
         $data = $request->validate([
             'product_id' => 'required|exists:products,id',
             'branch_id'  => 'nullable|exists:branches,id',
-            'quantity'   => 'required|integer', // +10 = add, -5 = reduce
+            'quantity'   => 'required|numeric', // +10 = add, -5 = reduce (decimals allowed)
             'reason'     => 'nullable|string'
         ]);
 
@@ -46,7 +46,7 @@ class StockController extends Controller
                 ['quantity' => 0]
             );
         
-        $qty       = (int) $data['quantity'];
+        $qty       = (float) $data['quantity'];
         $unitCost  = (float) $stock->avg_cost;
         $amount    = round(abs($qty) * $unitCost, 2); // total valuation
         $memo      = trim('Inventory adjustment: ' . ($data['reason'] ?? 'manual-adjustment'));
@@ -124,7 +124,7 @@ class StockController extends Controller
             'product_id'   => 'required|exists:products,id',
             'from_branch'  => 'required|exists:branches,id',
             'to_branch'    => 'required|exists:branches,id|different:from_branch',
-            'quantity'     => 'required|integer|min:1',
+            'quantity'     => 'required|numeric|min:0.001',
             'reference'    => 'nullable|string', // e.g., transfer voucher number
         ]);
 

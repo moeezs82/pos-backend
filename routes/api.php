@@ -284,6 +284,7 @@ Route::prefix('v1')->group(function () {
         Route::post('/printer-config', [PrinterConfigController::class, 'show']);
         Route::get('/printer-config', [PrinterConfigController::class, 'show']);
         Route::get('/printer-config/all', [PrinterConfigController::class, 'index']);
+        Route::get('/printer-config/templates', [PrinterConfigController::class, 'templates']);
         Route::post('/printer-config/save', [PrinterConfigController::class, 'save'])->name('printer-config.save');
         Route::post('/printer-config/test', [PrinterConfigController::class, 'test'])->name('printer-config.test');
 

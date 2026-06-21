@@ -154,7 +154,7 @@ class SaleController extends Controller
             'items'       => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
             'items.*.discount_pct' => 'nullable|numeric',
-            'items.*.quantity'   => 'required|integer|not_in:0',
+            'items.*.quantity'   => 'required|numeric|not_in:0',
             'items.*.price'      => 'required|numeric|min:0',
             'discount'    => 'nullable|numeric|min:0',
             'tax'         => 'nullable|numeric',
@@ -249,7 +249,7 @@ class SaleController extends Controller
             // create items (do not duplicate stock decrement here — handled by deductStockAndStampCosts)
             foreach ($data['items'] as $item) {
                 $productId = (int)$item['product_id'];
-                $qty       = (int)$item['quantity'];
+                $qty       = (float)$item['quantity'];
                 $price     = (float)$item['price'];
 
                 // New: discount % (clamped between 0 and 100)

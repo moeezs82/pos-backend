@@ -135,7 +135,7 @@ class PurchaseController extends Controller
             'invoice_date' => 'nullable|date',
             'items' => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
-            'items.*.quantity'   => 'required|integer|min:1',
+            'items.*.quantity'   => 'required|numeric|min:0.001',
             'items.*.price'      => 'required|numeric|min:0',
             'items.*.discount' => 'nullable|numeric',
             'discount' => 'nullable|numeric|min:0',
@@ -143,7 +143,7 @@ class PurchaseController extends Controller
             'expected_at' => 'nullable|date',
             'notes'    => 'nullable|string',
             'receive_now' => 'boolean',
-            'items.*.received_qty' => 'nullable|integer|min:0',
+            'items.*.received_qty' => 'nullable|numeric|min:0',
 
             // optional payment block
             'payment' => 'nullable|array',
@@ -203,13 +203,13 @@ class PurchaseController extends Controller
                 $discountPct = max(0.0, min(100.0, $discountPct));
 
                 // Line math (round at money boundaries)
-                $lineSubtotal = round((int)$row['quantity'] * (float)$row['price'], 2);
+                $lineSubtotal = round((float)$row['quantity'] * (float)$row['price'], 2);
                 $lineDiscount = round($lineSubtotal * ($discountPct / 100.0), 2);
                 $lineTotal    = round($lineSubtotal - $lineDiscount, 2);
 
                 $item = $p->items()->create([
                     'product_id'   => $row['product_id'],
-                    'quantity'     => (int)$row['quantity'],
+                    'quantity'     => (float)$row['quantity'],
                     'received_qty' => 0,
                     'price'        => (float)$row['price'],
                     'discount'     => (float)$row['discount'],
@@ -220,7 +220,7 @@ class PurchaseController extends Controller
                     'price' => (float)$row['price'],
                 ]);
 
-                $toReceive = (int) $row['quantity'];
+                $toReceive = (float) $row['quantity'];
                 if ($toReceive > 0) {
                     $receiveRows[] = [
                         'item_id'     => $item->id,
@@ -285,7 +285,7 @@ class PurchaseController extends Controller
         $data = $request->validate([
             'items' => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
-            'items.*.receive_qty' => 'required|integer|min:1',
+            'items.*.receive_qty' => 'required|numeric|min:0.001',
             'reference' => 'nullable|string', // GRN
             'received_at' => 'nullable|date',
         ]);
@@ -305,7 +305,7 @@ class PurchaseController extends Controller
 
             foreach ($data['items'] as $in) {
                 $productId = (int) $in['product_id'];
-                $receive   = (int) $in['receive_qty'];
+                $receive   = (float) $in['receive_qty'];
 
                 $pi = $itemsMap->get($productId);
                 if (!$pi) {
@@ -413,7 +413,7 @@ class PurchaseController extends Controller
 
         $data = $request->validate([
             'product_id' => 'required|exists:products,id',
-            'quantity'   => 'required|integer|min:1',
+            'quantity'   => 'required|numeric|min:0.001',
             'price'      => 'required|numeric|min:0',
             'discount'      => 'nullable|numeric|min:0',
         ]);
@@ -435,14 +435,14 @@ class PurchaseController extends Controller
             $discountPct = max(0.0, min(100.0, $discountPct));
 
             // Line math (round at money boundaries)
-            $lineSubtotal = round((int)$data['quantity'] * (float)$data['price'], 2);
+            $lineSubtotal = round((float)$data['quantity'] * (float)$data['price'], 2);
             $lineDiscount = round($lineSubtotal * ($discountPct / 100.0), 2);
             $lineTotal    = round($lineSubtotal - $lineDiscount, 2);
 
             // Create line (ordered == received now)
             $item = $purchase->items()->create([
                 'product_id' => (int)$data['product_id'],
-                'quantity'   => (int)$data['quantity'],
+                'quantity'   => (float)$data['quantity'],
                 'price'      => (float)$data['price'],
                 'discount'   => (float)$data['discount'] ?? 0.00,
                 'total'      => $lineTotal,
@@ -487,7 +487,7 @@ class PurchaseController extends Controller
         $branches->assertCanAccessBranch($request, $purchase->branch_id ? (int) $purchase->branch_id : null);
 
         $data = $request->validate([
-            'quantity' => 'sometimes|integer|min:1',
+            'quantity' => 'sometimes|numeric|min:0.001',
             'price'    => 'sometimes|numeric|min:0',
         ]);
 
@@ -498,13 +498,13 @@ class PurchaseController extends Controller
             $item = $purchase->items()->lockForUpdate()->findOrFail($itemId);
 
             // Snapshot BEFORE
-            $oldQty   = (int)   $item->quantity;
+            $oldQty   = (float) $item->quantity;
             $oldPrice = (float) $item->price;
             $oldSub   = (float) $purchase->subtotal;
             $oldTot   = (float) $purchase->total;
 
             // New values (default to old)
-            $newQty   = array_key_exists('quantity', $data) ? (int)$data['quantity'] : $oldQty;
+            $newQty   = array_key_exists('quantity', $data) ? (float)$data['quantity'] : $oldQty;
             $newPrice = array_key_exists('price',   $data) ? (float)$data['price']   : $oldPrice;
 
             $qtyDelta = $newQty - $oldQty;
@@ -577,7 +577,7 @@ class PurchaseController extends Controller
             ]);
 
             // --- 3) Price-only delta on EXISTING qty (no avg change, no stock move) ---
-            if ($qtyDelta === 0 && $newPrice !== $oldPrice) {
+            if (round($qtyDelta, 3) == 0 && $newPrice !== $oldPrice) {
                 // Move the difference to PPV vs AP (Inventory untouched)
                 $amt = round(($newPrice - $oldPrice) * $oldQty, 2);
                 if ($amt != 0.0) {
@@ -615,7 +615,7 @@ class PurchaseController extends Controller
         return DB::transaction(function () use ($purchase, $itemId, $branchId) {
             $item = $purchase->items()->lockForUpdate()->findOrFail($itemId);
 
-            $qty = (int) $item->quantity;
+            $qty = (float) $item->quantity;
             if ($qty > 0) {
                 // Return all qty to vendor at avg (no revaluation)
                 $avg = app(\App\Services\InventoryValuationWriteService::class)->returnToVendor(
@@ -743,11 +743,11 @@ class PurchaseController extends Controller
     protected function updateReceiveStatus(Purchase $purchase): void
     {
         $items = $purchase->items;
-        $totalOrdered  = (int) $items->sum('quantity');
-        $totalReceived = (int) $items->sum('received_qty');
+        $totalOrdered  = (float) $items->sum('quantity');
+        $totalReceived = (float) $items->sum('received_qty');
 
         $status = 'ordered';
-        if ($totalReceived === 0) {
+        if (round($totalReceived, 3) == 0) {
             $status = 'ordered';
         } elseif ($totalReceived < $totalOrdered) {
             $status = 'partial';
@@ -764,7 +764,7 @@ class PurchaseController extends Controller
      * Increment product stock for a branch. Creates row if missing.
      * Pass negative $qty to decrement (adjustment).
      */
-    protected function incrementStock(int $productId, int $branchId, int $qty): void
+    protected function incrementStock(int $productId, int $branchId, float $qty): void
     {
         $affected = DB::table('product_stocks')
             ->where('product_id', $productId)

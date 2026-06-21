@@ -22,7 +22,7 @@ class SaleItemController extends Controller
 
         $data = $request->validate([
             'product_id' => 'required|exists:products,id',
-            'quantity'   => 'required|integer|min:1',
+            'quantity'   => 'required|numeric|min:0.001',
             'price'      => 'required|numeric|min:0',
             'discount_pct'      => 'nullable|numeric|min:0',
         ]);
@@ -48,7 +48,7 @@ class SaleItemController extends Controller
 
             // create item
             // Expecting: product_id, quantity, price, (optional) discount_pct
-            $qty   = (int) ($data['quantity'] ?? 1);
+            $qty   = (float) ($data['quantity'] ?? 1);
             $price = (float) ($data['price'] ?? 0);
             $disc  = isset($data['discount_pct']) ? (float) $data['discount_pct'] : 0.0;
 
@@ -141,7 +141,7 @@ class SaleItemController extends Controller
         $item = $sale->items()->findOrFail($itemId);
 
         $data = $request->validate([
-            'quantity' => 'sometimes|integer|min:1',
+            'quantity' => 'sometimes|numeric|min:0.001',
             'price'    => 'sometimes|numeric|min:0',
         ]);
 
@@ -157,11 +157,11 @@ class SaleItemController extends Controller
             ];
             $oldCogs = (float)$sale->cogs;
 
-            $oldQty = (int)$item->quantity;
+            $oldQty = (float)$item->quantity;
             $oldPrice = (float)$item->price;
             $oldLineCost = (float)($item->line_cost ?? 0);
 
-            $newQty = array_key_exists('quantity', $data) ? (int)$data['quantity'] : $oldQty;
+            $newQty = array_key_exists('quantity', $data) ? (float)$data['quantity'] : $oldQty;
             $newPrice = array_key_exists('price', $data) ? (float)$data['price'] : $oldPrice;
 
             // fetch avg cost to use for unit_cost (we keep item's unit_cost aligned to avg)
@@ -181,7 +181,7 @@ class SaleItemController extends Controller
 
             // compute stock delta and apply
             $qtyDelta = $newQty - $oldQty; // positive => sold more, negative => sold less (return to stock)
-            if ($qtyDelta !== 0) {
+            if (round($qtyDelta, 3) != 0) {
                 // applyStockDelta expects deltaQty positive to add to stock; we want to decrement stock when selling more
                 // so pass -$qtyDelta to apply the correct sign for product_stocks and StockMovement
                 DB::table('product_stocks')
@@ -274,7 +274,7 @@ class SaleItemController extends Controller
             ];
             $oldCogs = (float)$sale->cogs;
 
-            $qty = (int)$item->quantity;
+            $qty = (float)$item->quantity;
             $lineCost = (float)($item->line_cost ?? 0);
 
             // Return stock for removed sale quantity (put back into product_stocks)

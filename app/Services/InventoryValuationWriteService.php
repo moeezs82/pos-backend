@@ -9,7 +9,7 @@ class InventoryValuationWriteService
     /**
      * Receives purchase into product_stocks and updates avg_cost (moving average).
      */
-    public function receivePurchase(int $productId, ?int $branchId, int $receiveQty, float $unitPrice, ?string $ref = null): void
+    public function receivePurchase(int $productId, ?int $branchId, float $receiveQty, float $unitPrice, ?string $ref = null): void
     {
         if ($receiveQty <= 0) return;
 
@@ -19,7 +19,7 @@ class InventoryValuationWriteService
             ->where('branch_id',  $branchId)
             ->first();
 
-        $oldQty  = (int)($row->quantity ?? 0);
+        $oldQty  = (float)($row->quantity ?? 0);
         $oldCost = (float)($row->avg_cost ?? 0.0);
 
         $newQty  = $oldQty + $receiveQty;
@@ -50,7 +50,7 @@ class InventoryValuationWriteService
     public function returnToVendor(
         int $productId,
         int $branchId,
-        int $returnQty,
+        float $returnQty,
         ?string $ref = null
     ): float {
         // Expect positive qty for a return. If 0 or negative, just echo current avg and do nothing.
@@ -81,7 +81,7 @@ class InventoryValuationWriteService
         }
 
         $avg    = (float) ($row->avg_cost ?? 0.0);
-        $onHand = (int)   ($row->quantity ?? 0);
+        $onHand = (float) ($row->quantity ?? 0);
 
         // NO CLAMPING: allow going negative
         $newQty = $onHand - $returnQty;

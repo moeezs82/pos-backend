@@ -337,7 +337,7 @@ class SaleReturnController extends Controller
             'sale_id'                  => ['required', 'integer', 'exists:sales,id'],
             'items'                    => ['required', 'array', 'min:1'],
             'items.*.sale_item_id'     => ['required', 'integer'],
-            'items.*.quantity'         => ['required', 'integer', 'min:1'],
+            'items.*.quantity'         => ['required', 'numeric', 'min:0.001'],
             'reason'                   => ['nullable', 'string'],
 
             'approve_now'              => ['nullable', 'boolean'],
@@ -378,10 +378,10 @@ class SaleReturnController extends Controller
 
             foreach ($data['items'] as $r) {
                 $si        = $saleItems[$r['sale_item_id']];
-                $sold      = (int)$si->quantity;
-                $prev      = (int)($alreadyReturned[$si->id] ?? 0);
+                $sold      = (float)$si->quantity;
+                $prev      = (float)($alreadyReturned[$si->id] ?? 0);
                 $remaining = max($sold - $prev, 0);
-                $req       = (int)$r['quantity'];
+                $req       = (float)$r['quantity'];
 
                 if ($req > $remaining) {
                     $violations[] = "Item #{$si->id}: requested {$req} exceeds remaining {$remaining} (sold {$sold}, returned {$prev}).";
@@ -510,7 +510,7 @@ class SaleReturnController extends Controller
             // Group quantities by product for stock-in
             $byProductQty = collect($return->items)
                 ->groupBy('product_id')
-                ->map(fn($lines) => (int) $lines->sum('quantity'));
+                ->map(fn($lines) => (float) $lines->sum('quantity'));
 
             $productIds = $byProductQty->keys()->all();
 
@@ -527,7 +527,7 @@ class SaleReturnController extends Controller
             foreach ($return->items as $ri) {
                 $si = $saleCosts->firstWhere('id', $ri->sale_item_id);
                 $uc = (float)($si->unit_cost ?? 0.0);
-                $lineCost = round($uc * (int)$ri->quantity, 4);
+                $lineCost = round($uc * (float)$ri->quantity, 4);
                 $inventoryValue += $lineCost;
                 $byProductCost[$ri->product_id] = ($byProductCost[$ri->product_id] ?? 0.0) + $lineCost;
             }
@@ -551,12 +551,12 @@ class SaleReturnController extends Controller
                     ->get()->keyBy('product_id');
 
                 foreach ($productIds as $pid) {
-                    $incQty  = (int)($byProductQty[$pid] ?? 0);
+                    $incQty  = (float)($byProductQty[$pid] ?? 0);
                     $addCost = (float)($byProductCost[$pid] ?? 0.0);
                     if ($incQty <= 0) continue;
 
                     $row     = $stocks[$pid] ?? null;
-                    $newQty  = (int)($row->quantity ?? 0);
+                    $newQty  = (float)($row->quantity ?? 0);
                     // Because we updated quantity above already, newQty is post-increase.
                     $prevQty = max($newQty - $incQty, 0);
                     $prevCost = (float)($row->avg_cost ?? 0.0);
@@ -579,7 +579,7 @@ class SaleReturnController extends Controller
                         'product_id' => $pid,
                         'branch_id'  => $return->branch_id,
                         'type'       => 'return',
-                        'quantity'   => (int)$qty,
+                        'quantity'   => (float)$qty,
                         'reference'  => $return->return_no,
                         'created_at' => $now,
                         'updated_at' => $now,
