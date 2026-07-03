@@ -162,7 +162,31 @@ class SaleController extends Controller
             'payments'    => 'array',
             'meta' => 'nullable|array',
             'sale_type' => 'nullable|string|in:dine_in,takeaway,delivery,self',
+            // Offline-sync idempotency (handover doc §1.1-1.3). Both optional
+            // and additive — online sales that omit them behave exactly as
+            // before.
+            'client_ref'  => 'nullable|uuid',
+            'occurred_at' => 'nullable|date',
         ]);
+
+        // Idempotent replay: if this exact client_ref was already synced
+        // (earlier attempt, double-tap of "Sync Now", a retried request
+        // whose original response never made it back to the device), return
+        // the existing sale instead of creating a duplicate. This check is
+        // a fast-path; the DB `unique` constraint on client_ref is the real
+        // guarantee and is handled via the catch below for the race where
+        // two requests for the same client_ref land at (almost) the same
+        // time.
+        if (!empty($data['client_ref'])) {
+            $existing = Sale::where('client_ref', $data['client_ref'])->first();
+            if ($existing) {
+                return ApiResponse::success([
+                    'sale' => $existing->fresh(['items', 'payments']),
+                    'receipts' => null,
+                    'already_existed' => true,
+                ], 'Sale already recorded (idempotent replay)');
+            }
+        }
 
         $branchId = $branches->requireBranchId($request);
 
@@ -206,24 +230,68 @@ class SaleController extends Controller
             $delivery      = (float)($data['delivery'] ?? 0);
             $total    = round($subtotal - $discount + $tax + $delivery, 2);
 
+            // Offline-sync: preserve the ORIGINAL sale time (handover doc
+            // §1.3). occurred_at is the on-device timestamp captured the
+            // moment the cashier pressed "Save Sale" while offline. When
+            // present, both invoice_date AND the invoice number's date
+            // prefix follow it (recommended option), so an offline Monday
+            // sale still posts, numbers, and reconciles as a Monday sale
+            // even if it's synced on Wednesday — keeping that day's
+            // day-book/cashbook accurate. Falls back to "now" for normal
+            // online sales (unchanged behaviour).
+            $occurredAt = !empty($data['occurred_at']) ? \Carbon\Carbon::parse($data['occurred_at']) : now();
+
             // create sale header
-            $sale = Sale::create([
-                'invoice_no'  => $this->generateInvoiceNo(),
-                'customer_id' => $data['customer_id'] ?? null,
-                'vendor_id'   => $data['vendor_id'] ?? null,
-                'salesman_id' => $data['salesman_id'] ?? null,
-                'delivery_boy_id' => $data['delivery_boy_id'] ?? null,
-                'created_by'  => $data['created_by'] ?? auth()->id(),
-                'branch_id'   => $branchId,
-                'subtotal'    => round($subtotal, 2),
-                'discount'    => round($discount, 2),
-                'tax'         => round($tax, 2),
-                'delivery'    => round($delivery, 2),
-                'total'       => $total,
-                'status'      => 'pending',
-                'meta'        => $data['meta'] ?? [],
-                'sale_type' => $data['sale_type'] ?? 'dine_in',
-            ]);
+            try {
+                $sale = Sale::create([
+                    'invoice_no'  => $this->generateInvoiceNo($occurredAt),
+                    'client_ref'  => $data['client_ref'] ?? null,
+                    'invoice_date' => $occurredAt->toDateString(),
+                    'customer_id' => $data['customer_id'] ?? null,
+                    'vendor_id'   => $data['vendor_id'] ?? null,
+                    'salesman_id' => $data['salesman_id'] ?? null,
+                    'delivery_boy_id' => $data['delivery_boy_id'] ?? null,
+                    'created_by'  => $data['created_by'] ?? auth()->id(),
+                    'branch_id'   => $branchId,
+                    'subtotal'    => round($subtotal, 2),
+                    'discount'    => round($discount, 2),
+                    'tax'         => round($tax, 2),
+                    'delivery'    => round($delivery, 2),
+                    'total'       => $total,
+                    'status'      => 'pending',
+                    'meta'        => $data['meta'] ?? [],
+                    'sale_type' => $data['sale_type'] ?? 'dine_in',
+                ]);
+            } catch (\Illuminate\Database\QueryException $e) {
+                // Race-safety net (handover doc §1.2): the pre-transaction
+                // existing-client_ref check above handles the common case,
+                // but two near-simultaneous sync attempts for the same
+                // queued sale can both pass that check before either has
+                // inserted. The DB `unique` constraint on client_ref is
+                // what actually stops the duplicate row; if it fires here,
+                // don't 500 — re-fetch and return the row the other
+                // request just created, same as the idempotent-replay path.
+                if (!empty($data['client_ref']) && $this->isUniqueViolation($e)) {
+                    $existing = Sale::where('client_ref', $data['client_ref'])->first();
+                    if ($existing) {
+                        return ApiResponse::success([
+                            'sale' => $existing->fresh(['items', 'payments']),
+                            'receipts' => null,
+                            'already_existed' => true,
+                        ], 'Sale already recorded (idempotent replay)');
+                    }
+                }
+                throw $e;
+            }
+
+            // Stamp created_at to the original offline sale time too (not
+            // just invoice_date), so anything reading created_at directly —
+            // index()'s date_from/date_to filters, default ordering, etc. —
+            // reflects the real sale time rather than the sync time.
+            if (!empty($data['occurred_at'])) {
+                $sale->created_at = $occurredAt;
+                $sale->saveQuietly();
+            }
 
             // gather product IDs once
             $productIds = collect($data['items'])
@@ -509,9 +577,10 @@ class SaleController extends Controller
         $branches->assertCanAccessBranch($request, $branchId);
     }
 
-    private function generateInvoiceNo(): string
+    private function generateInvoiceNo(?\Carbon\Carbon $forDate = null): string
     {
-        $datePart = now()->format('Ymd'); // 20260419
+        $forDate = $forDate ?? now();
+        $datePart = $forDate->format('Ymd'); // 20260419
         $prefix = "INV-{$datePart}-";
 
         $lastInvoice = Sale::where('invoice_no', 'like', $prefix . '%')
@@ -526,5 +595,52 @@ class SaleController extends Controller
         }
 
         return $prefix . str_pad((string) $nextNumber, 3, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * True if the given QueryException is a unique-constraint violation
+     * (MySQL error 1062 / SQLSTATE 23000). Used to catch the client_ref
+     * race in store() without swallowing other DB errors.
+     */
+    private function isUniqueViolation(\Illuminate\Database\QueryException $e): bool
+    {
+        return (string) $e->getCode() === '23000' || (int) ($e->errorInfo[1] ?? 0) === 1062;
+    }
+
+    /**
+     * Offline-sync reconciliation (handover doc §1.4).
+     *
+     * Lets the device check "did this sale actually go through?" after an
+     * ambiguous sync result (e.g. the POST /sales request was sent and the
+     * server saved it, but the connection dropped before the response came
+     * back). The device sends every client_ref it's unsure about and gets
+     * back which ones exist server-side and which are safe to retry.
+     */
+    public function verifyBatch(Request $request)
+    {
+        $data = $request->validate([
+            'client_refs'   => 'required|array|min:1',
+            'client_refs.*' => 'uuid',
+        ]);
+
+        $refs = collect($data['client_refs'])->unique()->values();
+
+        $found = Sale::whereIn('client_ref', $refs)
+            ->get(['id', 'client_ref', 'invoice_no', 'total'])
+            ->map(fn ($sale) => [
+                'client_ref' => $sale->client_ref,
+                'id'         => $sale->id,
+                'invoice_no' => $sale->invoice_no,
+                'total'      => (float) $sale->total,
+            ])
+            ->values();
+
+        $foundRefs = $found->pluck('client_ref');
+        $missing   = $refs->diff($foundRefs)->values();
+
+        return ApiResponse::success([
+            'found'   => $found,
+            'missing' => $missing,
+        ]);
     }
 }

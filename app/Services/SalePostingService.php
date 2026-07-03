@@ -71,6 +71,8 @@ class SalePostingService
 
     public function deductStockAndStampCosts(Sale $sale): void
     {
+        $stockConflict = false;
+
         foreach ($sale->items as $it) {
             $avg = $this->val->avgCost($it->product_id, $sale->branch_id);
             $lineCost = round($avg * $it->quantity, 2);
@@ -84,6 +86,22 @@ class SalePostingService
                     'updated_at' => now(),
                 ]);
 
+            // Offline-sync guardrail (handover doc §1.5): stock is only
+            // decremented here, at posting time — never while a sale sits
+            // offline on a device — so two offline devices can each "sell"
+            // the last unit of the same product before either has synced.
+            // Don't reject the sale: it already happened and the customer
+            // already has the goods/receipt, and rejecting it would strand
+            // a completed transaction. Instead just flag it so a manager
+            // can review and do a manual stock adjustment.
+            $resultingQty = DB::table('product_stocks')
+                ->where('product_id', $it->product_id)
+                ->where('branch_id', $sale->branch_id)
+                ->value('quantity');
+            if ($resultingQty !== null && (float) $resultingQty < 0) {
+                $stockConflict = true;
+            }
+
             StockMovement::create([
                 'product_id' => $it->product_id,
                 'branch_id' => $sale->branch_id,
@@ -94,10 +112,18 @@ class SalePostingService
         }
 
         $cogs = $sale->items()->sum('line_cost');
-        $sale->update([
+        $updates = [
             'cogs' => $cogs,
             'gross_profit' => $sale->total - $cogs,
-        ]);
+        ];
+
+        if ($stockConflict) {
+            $meta = $sale->meta ?? [];
+            $meta['stock_conflict'] = true;
+            $updates['meta'] = $meta;
+        }
+
+        $sale->update($updates);
     }
 
     private function signedLine(string $accountCode, float $amount, $partyType = null, $partyId = null): array

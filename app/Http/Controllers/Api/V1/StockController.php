@@ -28,6 +28,35 @@ class StockController extends Controller
         return ApiResponse::success($stocks, 'Stocks retrived successfully');
     }
 
+    // Offline-sync guardrail report (handover doc §1.5): products currently
+    // at negative on-hand quantity, alongside the sales flagged with
+    // meta.stock_conflict = true that pushed them there (from two offline
+    // devices selling the same last unit before either synced). Managers
+    // use this to do a manual stock adjustment; nothing here blocks or
+    // reverses the sale.
+    public function negativeStockConflicts(Request $request, BranchContextService $branches)
+    {
+        $stockQuery = ProductStock::with(['product', 'branch'])
+            ->where('quantity', '<', 0);
+        $branches->applyToQuery($stockQuery, $request, 'branch_id');
+        $negativeStocks = $stockQuery->get();
+
+        // ->where('meta->stock_conflict', true) (rather than
+        // whereJsonContains, which is for JSON arrays) — meta.stock_conflict
+        // is a scalar boolean, so this compiles to a JSON path equality
+        // check.
+        $salesQuery = \App\Models\Sale::with(['items', 'customer:id,first_name,last_name'])
+            ->where('meta->stock_conflict', true)
+            ->orderByDesc('created_at');
+        $branches->applyToQuery($salesQuery, $request, 'branch_id');
+        $flaggedSales = $salesQuery->get();
+
+        return ApiResponse::success([
+            'negative_stocks' => $negativeStocks,
+            'flagged_sales'   => $flaggedSales,
+        ], 'Offline sync stock conflicts');
+    }
+
     // Adjust stock (increase/decrease manually)
     public function adjust(Request $request, AccountingService $accounting, BranchContextService $branches, ProductBranchService $productBranches)
     {

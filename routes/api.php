@@ -115,6 +115,8 @@ Route::prefix('v1')->group(function () {
         // Stock
         Route::get('/stocks', [StockController::class, 'index'])
             ->middleware('permission:view-stock');
+        Route::get('/stocks/negative-stock-conflicts', [StockController::class, 'negativeStockConflicts'])
+            ->middleware('permission:view-stock');
         Route::post('/stocks/adjust', [StockController::class, 'adjust'])
             ->middleware('permission:adjust-stock');
         Route::post('/stocks/transfer', [StockController::class, 'transfer'])
@@ -183,6 +185,11 @@ Route::prefix('v1')->group(function () {
 
             Route::get('/', [SaleController::class, 'index'])->middleware('permission:view-sales');
             Route::post('/', [SaleController::class, 'store'])->middleware('permission:create-sales');
+            // Offline-sync reconciliation (handover doc §1.4). Must be
+            // registered before '/{id}' below so it isn't swallowed by the
+            // GET show() wildcard — it's fine here since this is POST and
+            // show() is GET, but kept alongside store() for clarity.
+            Route::post('/verify-batch', [SaleController::class, 'verifyBatch'])->middleware('permission:create-sales');
             Route::get('/{id}', [SaleController::class, 'show'])->middleware('permission:view-sales');
             Route::put('/{id}', [SaleController::class, 'update'])->middleware('permission:manage-sales');
             Route::put('/{id}/delivery-boy', [SaleController::class, 'updateDeliveryBoy'])->middleware('permission:manage-sales');
