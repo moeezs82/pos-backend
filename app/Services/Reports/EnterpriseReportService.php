@@ -60,7 +60,7 @@ class EnterpriseReportService
     public function run(string $key, array $input = [], bool $export = false): array
     {
         $key = str($key)->lower()->replace('_', '-')->toString();
-        $filters = $this->filters($input);
+        $filters = $this->filters($input, $export);
 
         $report = match ($key) {
             'sales-summary' => $this->salesSummary($filters, $export),
@@ -109,7 +109,7 @@ class EnterpriseReportService
         return $report;
     }
 
-    private function filters(array $input): array
+    private function filters(array $input, bool $export = false): array
     {
         $from = $this->parseFrom($input['from'] ?? null);
         $to = $this->parseTo($input['to'] ?? null);
@@ -137,7 +137,13 @@ class EnterpriseReportService
             'sort_by' => $input['sort_by'] ?? null,
             'direction' => strtolower($input['direction'] ?? 'desc') === 'asc' ? 'asc' : 'desc',
             'page' => max(1, (int)($input['page'] ?? 1)),
-            'per_page' => max(1, min(500, (int)($input['per_page'] ?? 50))),
+            // On-screen pagination stays capped at 500 for snappy UI
+            // responses; exports intentionally request a much larger
+            // per_page (see enterprise_reports_workspace_screen.dart, which
+            // sends 1000) to pull the full filtered dataset in one request,
+            // so that path gets a higher ceiling instead of silently
+            // truncating the exported report to 500 rows.
+            'per_page' => max(1, min($export ? 5000 : 500, (int)($input['per_page'] ?? 50))),
         ];
     }
 

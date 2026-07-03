@@ -36,7 +36,7 @@ class EnterpriseReportController extends Controller
                 'method' => 'optional payment method',
                 'search' => 'optional text search',
                 'page' => 'default 1',
-                'per_page' => 'default 50, max 500',
+                'per_page' => 'default 50, max 500 (max 5000 when exporting)',
             ],
             'exports' => ['xlsx', 'pdf'],
         ], 'Enterprise report catalog fetched successfully');

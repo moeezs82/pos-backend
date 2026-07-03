@@ -8,6 +8,7 @@ use App\Models\Product;
 use App\Models\ProductStock;
 use App\Services\BranchContextService;
 use App\Services\ProductBranchService;
+use App\Services\Products\ProductImportExportService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
@@ -293,5 +294,122 @@ class ProductController extends Controller
         $product->delete();
 
         return ApiResponse::success(null);
+    }
+
+    /**
+     * Stream the current branch's product catalog as CSV or XLSX.
+     * Respects the same filters as index() (search, vendor/category/brand,
+     * is_active) so a filtered list view can be exported as-is.
+     */
+    public function export(
+        Request $request,
+        BranchContextService $branches,
+        ProductBranchService $productBranches,
+        ProductImportExportService $importExport
+    ) {
+        $branchId = $branches->effectiveBranchId($request);
+        $format = strtolower((string) $request->get('format', 'xlsx'));
+
+        if (!in_array($format, ['csv', 'xlsx'], true)) {
+            return ApiResponse::error('Unsupported export format. Use csv or xlsx.', 422);
+        }
+
+        $query = $productBranches->scopeForBranch(Product::query(), $branchId)
+            ->with(['category', 'brand', 'vendor']);
+
+        if ($request->filled('search')) {
+            $search = $request->string('search')->toString();
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                    ->orWhere('sku', 'like', "%{$search}%")
+                    ->orWhere('barcode', 'like', "%{$search}%");
+            });
+        }
+
+        if ($request->filled('vendor_id')) {
+            $query->where('vendor_id', $request->vendor_id);
+        }
+
+        if ($request->filled('category_id')) {
+            $query->where('category_id', $request->category_id);
+        }
+
+        if ($request->filled('brand_id')) {
+            $query->where('brand_id', $request->brand_id);
+        }
+
+        if ($request->filled('is_active')) {
+            $query->where('is_active', $request->boolean('is_active'));
+        }
+
+        $products = $query->orderBy('name')->get();
+        $rows = $importExport->rowsForExport($products);
+        $timestamp = now()->format('Ymd-His');
+
+        if ($format === 'csv') {
+            return response($importExport->exportToCsv($rows), 200, [
+                'Content-Type' => 'text/csv',
+                'Content-Disposition' => "attachment; filename=\"products-export-{$timestamp}.csv\"",
+            ]);
+        }
+
+        $path = $importExport->exportToXlsx($rows, 'Products Export');
+
+        return response()->download($path, "products-export-{$timestamp}.xlsx", [
+            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ])->deleteFileAfterSend(true);
+    }
+
+    /**
+     * Downloadable CSV/XLSX template with the exact column headers the
+     * import endpoint expects, pre-filled with one example row.
+     */
+    public function importTemplate(Request $request, ProductImportExportService $importExport)
+    {
+        $format = strtolower((string) $request->get('format', 'xlsx'));
+
+        if (!in_array($format, ['csv', 'xlsx'], true)) {
+            return ApiResponse::error('Unsupported template format. Use csv or xlsx.', 422);
+        }
+
+        $rows = $importExport->templateRows();
+
+        if ($format === 'csv') {
+            return response($importExport->exportToCsv($rows), 200, [
+                'Content-Type' => 'text/csv',
+                'Content-Disposition' => 'attachment; filename="product-import-template.csv"',
+            ]);
+        }
+
+        $path = $importExport->exportToXlsx($rows, 'Product Import Template');
+
+        return response()->download($path, 'product-import-template.xlsx', [
+            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ])->deleteFileAfterSend(true);
+    }
+
+    /**
+     * Bulk-import products from a CSV/XLSX upload. Category/brand/vendor
+     * are matched by name. Each row is validated and applied independently
+     * so one bad row doesn't fail the whole batch — the response contains
+     * a per-row success/error report.
+     */
+    public function import(Request $request, BranchContextService $branches, ProductImportExportService $importExport)
+    {
+        $branchId = $branches->requireBranchId($request);
+
+        $request->validate([
+            'file' => 'required|file|mimes:csv,txt,xlsx|max:10240',
+        ]);
+
+        $rows = $importExport->parseUpload($request->file('file'));
+
+        if (empty($rows)) {
+            return ApiResponse::error('The uploaded file has no data rows.', 422);
+        }
+
+        $report = $importExport->importRows($rows, $branchId);
+
+        return ApiResponse::success($report, 'Import completed');
     }
 }

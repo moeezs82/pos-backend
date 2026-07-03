@@ -49,6 +49,11 @@ class Product extends Model
         return $this->belongsTo(Brand::class);
     }
 
+    public function vendor()
+    {
+        return $this->belongsTo(Vendor::class);
+    }
+
     public function branch()
     {
         return $this->belongsTo(Branch::class);

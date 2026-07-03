@@ -36,7 +36,17 @@ class ReportFilterRequest extends FormRequest
             'sort_by' => ['nullable', 'string', 'max:80'],
             'direction' => ['nullable', 'string', 'in:asc,desc'],
             'page' => ['nullable', 'integer', 'min:1'],
-            'per_page' => ['nullable', 'integer', 'min:1', 'max:500'],
+            // The Enterprise Reports export screen deliberately requests
+            // per_page=1000 to pull the full filtered dataset in one shot
+            // (see enterprise_reports_workspace_screen.dart). Capping this at
+            // 500 made every export request fail Form Request validation —
+            // and because a failed FormRequest validation redirects (via
+            // url()->previous(), which falls back to the site root when
+            // there's no Referer header, as our HTTP client never sends
+            // one), the export silently landed on the Laravel welcome page
+            // instead of returning a 422. Raised to 5000 to give headroom
+            // above what the export screen currently sends.
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:5000'],
             'format' => ['nullable', 'string', 'in:xlsx,pdf,json'],
             'orientation' => ['nullable', 'string', 'in:portrait,landscape'],
         ];

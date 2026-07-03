@@ -123,6 +123,12 @@ Route::prefix('v1')->group(function () {
         Route::prefix('products')->group(function () {
             Route::get('/', [ProductController::class, 'index'])->middleware('permission:view-products');
             Route::post('/', [ProductController::class, 'store'])->middleware('permission:manage-products');
+            // Static segments must be registered before the '/{id}' wildcard
+            // below, otherwise Laravel matches "/products/export" etc. as
+            // show($id = 'export').
+            Route::get('/export', [ProductController::class, 'export'])->middleware('permission:view-products');
+            Route::get('/import-template', [ProductController::class, 'importTemplate'])->middleware('permission:view-products');
+            Route::post('/import', [ProductController::class, 'import'])->middleware('permission:manage-products');
             Route::get('/by-barcode/{code}/{vendor_id?}', [ProductController::class, 'findByBarcode'])->middleware('permission:view-products');
             Route::get('/{id}', [ProductController::class, 'show'])->middleware('permission:view-products');
             Route::put('/{id}', [ProductController::class, 'update'])->middleware('permission:manage-products');
