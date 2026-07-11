@@ -577,24 +577,71 @@ class SaleController extends Controller
         $branches->assertCanAccessBranch($request, $branchId);
     }
 
+    /**
+     * Collision-safe per-day invoice number (handover doc G2).
+     *
+     * MUST be called inside a DB transaction (store() already is): it takes a
+     * row-level lock on the day's counter, so two concurrent syncs serialise
+     * on it and can never read the same sequence and collide on the
+     * invoice_no UNIQUE index. Replaces the old read-MAX-then-+1, which had no
+     * lock and threw a 500 (→ queued sale wrongly marked failed) under the
+     * simultaneous reconnect burst this system is built for.
+     */
     private function generateInvoiceNo(?\Carbon\Carbon $forDate = null): string
     {
         $forDate = $forDate ?? now();
         $datePart = $forDate->format('Ymd'); // 20260419
         $prefix = "INV-{$datePart}-";
 
-        $lastInvoice = Sale::where('invoice_no', 'like', $prefix . '%')
-            ->orderByDesc('invoice_no')
-            ->value('invoice_no');
+        // Bounded loop only to cover the one narrow race the lock can't: the
+        // very first sale of a day, where two transactions both find no
+        // counter row and both try to seed it — the PK on `ymd` lets exactly
+        // one win, and the loser simply loops back into the locked-increment
+        // path. Steady state is a single locked read+update, no looping.
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            $row = DB::table('invoice_counters')
+                ->where('ymd', $datePart)
+                ->lockForUpdate()
+                ->first();
 
-        $nextNumber = 1;
+            if ($row) {
+                $nextNumber = (int) $row->next_seq;
+                DB::table('invoice_counters')
+                    ->where('ymd', $datePart)
+                    ->update(['next_seq' => $nextNumber + 1, 'updated_at' => now()]);
 
-        if ($lastInvoice) {
-            $lastSequence = (int) substr($lastInvoice, strlen($prefix));
-            $nextNumber = $lastSequence + 1;
+                return $prefix . str_pad((string) $nextNumber, 3, '0', STR_PAD_LEFT);
+            }
+
+            // No counter row yet. Seed from any sales already present for this
+            // day (e.g. rows created before this counter table shipped) so
+            // numbering continues rather than restarting at 1 and colliding.
+            $lastInvoice = Sale::where('invoice_no', 'like', $prefix . '%')
+                ->orderByDesc('invoice_no')
+                ->value('invoice_no');
+            $existingMax = $lastInvoice ? (int) substr($lastInvoice, strlen($prefix)) : 0;
+            $nextNumber = $existingMax + 1;
+
+            try {
+                DB::table('invoice_counters')->insert([
+                    'ymd'        => $datePart,
+                    'next_seq'   => $nextNumber + 1,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+
+                return $prefix . str_pad((string) $nextNumber, 3, '0', STR_PAD_LEFT);
+            } catch (\Illuminate\Database\QueryException $e) {
+                // Another transaction seeded the row first — loop back and
+                // take the locked-increment path instead.
+                if ($this->isUniqueViolation($e)) {
+                    continue;
+                }
+                throw $e;
+            }
         }
 
-        return $prefix . str_pad((string) $nextNumber, 3, '0', STR_PAD_LEFT);
+        throw new \RuntimeException('Could not allocate an invoice number for ' . $datePart);
     }
 
     /**

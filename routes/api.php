@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\V1\BranchController;
 use App\Http\Controllers\Api\V1\BrandController;
 use App\Http\Controllers\Api\V1\CashBookController;
 use App\Http\Controllers\Api\V1\CashLedgerController;
+use App\Http\Controllers\Api\V1\CatalogController;
 use App\Http\Controllers\Api\V1\CategoryController;
 use App\Http\Controllers\Api\V1\CustomerController;
 use App\Http\Controllers\Api\V1\DeliveryBoyController;
@@ -170,6 +171,16 @@ Route::prefix('v1')->group(function () {
             Route::put('/{id}',   [AccountController::class, 'update']);
             Route::put('/{id}/activate',   [AccountController::class, 'activate']);
             Route::put('/{id}/deactivate', [AccountController::class, 'deactivate']);
+        });
+
+        // Offline catalog feed (handover doc G1 / Phase 1). Read-only
+        // reference data the Flutter client mirrors into its local
+        // catalog_cache.db so a cashier can compose a sale with no
+        // connectivity. Gated on create-sales because that's exactly who
+        // needs an offline catalog to build a sale.
+        Route::prefix('catalog')->middleware('permission:create-sales')->group(function () {
+            Route::get('/snapshot', [CatalogController::class, 'snapshot']);
+            Route::get('/changes', [CatalogController::class, 'changes']);
         });
 
         Route::prefix('sales')->group(function () {
