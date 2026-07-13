@@ -27,6 +27,7 @@ use App\Http\Controllers\Api\V1\StockController;
 use App\Http\Controllers\Api\V1\UserController;
 use App\Http\Controllers\Api\V1\VendorController;
 use App\Models\Vendor;
+use App\Http\Controllers\Api\V1\RegisterShiftController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -46,6 +47,19 @@ Route::prefix('v1')->group(function () {
         Route::get('/me', [AuthController::class, 'me']);
         Route::post('auth/verify-password', [AuthController::class, 'verifyPassword']);
         Route::post('/switch-branch', [AuthController::class, 'switchBranch'])->name('switch-branch');
+
+        Route::get('/registers', [RegisterShiftController::class, 'registers'])->middleware('permission:view-register-shifts');
+        Route::post('/registers', [RegisterShiftController::class, 'storeRegister'])->middleware('permission:manage-register-shifts');
+        Route::put('/registers/{register}', [RegisterShiftController::class, 'updateRegister'])->middleware('permission:manage-register-shifts');
+        Route::prefix('register-shifts')->group(function () {
+            Route::get('/', [RegisterShiftController::class, 'index'])->middleware('permission:view-register-shifts');
+            Route::get('/active', [RegisterShiftController::class, 'active'])->middleware('permission:view-register-shifts');
+            Route::post('/open', [RegisterShiftController::class, 'open'])->middleware('permission:open-register-shift');
+            Route::get('/{shift}', [RegisterShiftController::class, 'show'])->middleware('permission:view-register-shifts');
+            Route::post('/{shift}/cash-movements', [RegisterShiftController::class, 'movement'])->middleware('permission:record-shift-cash-movement');
+            Route::post('/{shift}/close', [RegisterShiftController::class, 'close'])->middleware('permission:close-own-register-shift');
+            Route::post('/{shift}/force-close', [RegisterShiftController::class, 'forceClose'])->middleware('permission:manage-register-shifts');
+        });
 
         // Branches
         Route::get('/branches', [BranchController::class, 'index'])

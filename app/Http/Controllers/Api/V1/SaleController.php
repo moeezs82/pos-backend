@@ -14,6 +14,7 @@ use App\Services\ProductBranchService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use App\Models\RegisterShift;
 
 class SaleController extends Controller
 {
@@ -149,7 +150,6 @@ class SaleController extends Controller
             'vendor_id'   => 'nullable|exists:vendors,id',
             'salesman_id' => 'nullable|exists:users,id',
             'delivery_boy_id' => 'nullable|exists:users,id',
-            'created_by'  => 'nullable|exists:users,id',
             'branch_id'   => 'nullable|exists:branches,id',
             'items'       => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
@@ -167,6 +167,7 @@ class SaleController extends Controller
             // before.
             'client_ref'  => 'nullable|uuid',
             'occurred_at' => 'nullable|date',
+            'register_shift_client_ref' => 'nullable|uuid',
         ]);
 
         // Idempotent replay: if this exact client_ref was already synced
@@ -190,6 +191,31 @@ class SaleController extends Controller
 
         $branchId = $branches->requireBranchId($request);
 
+        $shiftQuery = RegisterShift::query()->where('branch_id', $branchId);
+        if (!empty($data['register_shift_client_ref'])) {
+            $shiftQuery->where('client_ref', $data['register_shift_client_ref']);
+        } else {
+            $shiftQuery->where('cashier_id', $request->user()->id)->where('status', 'open');
+        }
+        $registerShift = $shiftQuery->first();
+        if (!$registerShift) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'register_shift' => ['Open a register shift before creating a sale.'],
+            ]);
+        }
+        if ((int) $registerShift->cashier_id !== (int) $request->user()->id) {
+            abort(403, 'This register shift belongs to another cashier.');
+        }
+        if ($registerShift->status !== 'open') {
+            $occurredAtForShift = !empty($data['occurred_at']) ? \Carbon\Carbon::parse($data['occurred_at']) : now();
+            if ($occurredAtForShift->lt($registerShift->opened_at) ||
+                ($registerShift->closed_at && $occurredAtForShift->gt($registerShift->closed_at))) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'register_shift' => ['Offline sale time is outside the referenced shift.'],
+                ]);
+            }
+        }
+
         if (!empty($data['customer_id'])) {
             $customer = \App\Models\Customer::query()->findOrFail((int) $data['customer_id']);
             if ($customer->branch_id && (int) $customer->branch_id !== $branchId) {
@@ -212,7 +238,7 @@ class SaleController extends Controller
 
         $productBranches->assertProductsBelongToBranch(collect($data['items'])->pluck('product_id'), $branchId);
 
-        return DB::transaction(function () use ($data, $branchId) {
+        return DB::transaction(function () use ($data, $branchId, $registerShift) {
             // totals
             $subtotal = collect($data['items'])->sum(function ($i) {
                 $qty   = (float)($i['quantity']      ?? 0);
@@ -251,8 +277,9 @@ class SaleController extends Controller
                     'vendor_id'   => $data['vendor_id'] ?? null,
                     'salesman_id' => $data['salesman_id'] ?? null,
                     'delivery_boy_id' => $data['delivery_boy_id'] ?? null,
-                    'created_by'  => $data['created_by'] ?? auth()->id(),
+                    'created_by'  => auth()->id(),
                     'branch_id'   => $branchId,
+                    'register_shift_id' => $registerShift->id,
                     'subtotal'    => round($subtotal, 2),
                     'discount'    => round($discount, 2),
                     'tax'         => round($tax, 2),
@@ -375,6 +402,7 @@ class SaleController extends Controller
                 $receiptPayload = [
                     'customer_id' => $sale->customer_id,
                     'branch_id'   => $sale->branch_id,
+                    'register_shift_id' => $sale->register_shift_id,
                     'sale_id' => $sale->id,
                     'received_at' => $payment['paid_at'] ?? now()->toDateString(),
                     'method'      => $payment['method'] ?? 'cash',

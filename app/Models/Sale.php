@@ -15,6 +15,7 @@ class Sale extends Model
         'invoice_date',
         'customer_id',
         'branch_id',
+        'register_shift_id',
         'vendor_id',
         'salesman_id',
         'delivery_boy_id',
@@ -63,6 +64,7 @@ class Sale extends Model
     {
         return $this->belongsTo(Branch::class);
     }
+    public function registerShift() { return $this->belongsTo(RegisterShift::class); }
     public function vendor()
     {
         return $this->belongsTo(Vendor::class);

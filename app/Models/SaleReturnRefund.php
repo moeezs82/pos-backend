@@ -8,6 +8,7 @@ class SaleReturnRefund extends Model
 {
     protected $fillable = [
         'sale_return_id',
+        'register_shift_id',
         'amount',
         'method',
         'reference',

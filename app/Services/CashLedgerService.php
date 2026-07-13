@@ -8,6 +8,7 @@ use App\Models\CashLedgerEntry;
 use App\Models\JournalEntry;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use App\Models\RegisterShift;
 
 class CashLedgerService
 {
@@ -60,6 +61,8 @@ class CashLedgerService
         $txnDate  = $data['txn_date'] ?? now()->toDateString();
         $method   = $data['method'] ?? 'cash';
         $userId   = $data['created_by'] ?? auth()->id();
+        $registerShiftId = $data['register_shift_id'] ?? RegisterShift::query()
+            ->where('cashier_id', $userId)->where('branch_id', $branchId)->where('status', 'open')->value('id');
 
         $cashCode   = $this->cashAccountCodeForMethod($method);
         $cashAcct   = $this->accountByCode($cashCode);
@@ -84,12 +87,13 @@ class CashLedgerService
         }
 
         return DB::transaction(function () use (
-            $category, $amount, $branchId, $txnDate, $method, $userId,
+            $category, $amount, $branchId, $txnDate, $method, $userId, $registerShiftId,
             $cashCode, $cashAcct, $contraCode, $partyType, $partyId, $referenceName, $data
         ): CashLedgerEntry {
             $entry = CashLedgerEntry::create([
                 'txn_date'       => $txnDate,
                 'branch_id'      => $branchId,
+                'register_shift_id' => $registerShiftId,
                 'category'       => $category->value,
                 'direction'      => $category->direction(),
                 'amount'         => $amount,

@@ -16,6 +16,7 @@ class CashLedgerEntry extends Model
     protected $fillable = [
         'txn_date',
         'branch_id',
+        'register_shift_id',
         'category',
         'direction',
         'amount',

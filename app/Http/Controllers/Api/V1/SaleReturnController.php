@@ -715,6 +715,10 @@ class SaleReturnController extends Controller
 
             $refund = SaleReturnRefund::query()->create([
                 'sale_return_id' => $return->id,
+                'register_shift_id' => \App\Models\RegisterShift::query()
+                    ->where('cashier_id', $request->user()->id)
+                    ->where('branch_id', $return->branch_id)
+                    ->where('status', 'open')->value('id'),
                 'amount'         => $amount,
                 'method'         => $data['method'] ?? 'cash',
                 'reference'      => $data['reference'] ?? null,

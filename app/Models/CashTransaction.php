@@ -13,6 +13,7 @@ class CashTransaction extends Model
         'txn_date',
         'account_id',
         'branch_id',
+        'register_shift_id',
         'type',
         'amount',
         'counterparty_type',
@@ -32,6 +33,18 @@ class CashTransaction extends Model
         'txn_date' => 'date',
         'amount'   => 'decimal:2',
     ];
+
+    protected static function booted(): void
+    {
+        static::creating(function (CashTransaction $transaction) {
+            if ($transaction->register_shift_id || !$transaction->branch_id) return;
+            $userId = $transaction->created_by ?: auth()->id();
+            if (!$userId) return;
+            $transaction->register_shift_id = RegisterShift::query()
+                ->where('cashier_id', $userId)->where('branch_id', $transaction->branch_id)
+                ->where('status', 'open')->value('id');
+        });
+    }
 
     public function account()
     {

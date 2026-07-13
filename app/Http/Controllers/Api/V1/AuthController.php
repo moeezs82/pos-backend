@@ -53,7 +53,14 @@ class AuthController extends Controller
 
     public function logout(Request $request)
     {
-        $request->user()->tokens()->delete();
+        // Revoke only the token used for this request, not every token the
+        // user has ever created.  Deleting all tokens would invalidate any
+        // other device/session that is still active — and, critically, it
+        // caused the multi-user desktop bug: after User A logs out their token
+        // is already gone, so User B's independent token (issued by login())
+        // was also being wiped, leaving User B's subsequent API calls
+        // returning 401 "Unauthenticated".
+        $request->user()->currentAccessToken()->delete();
 
         return ApiResponse::success(null, 'Logged out successfully');
     }

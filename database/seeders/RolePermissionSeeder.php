@@ -8,6 +8,7 @@ use Illuminate\Database\Seeder;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\PermissionRegistrar;
+use App\Models\Register;
 
 class RolePermissionSeeder extends Seeder
 {
@@ -45,6 +46,13 @@ class RolePermissionSeeder extends Seeder
             'manage-roles',
             'manage-receipts',
             'manage-payments',
+            'view-register-shifts',
+            'open-register-shift',
+            'close-own-register-shift',
+            'manage-register-shifts',
+            'record-shift-cash-movement',
+            'approve-shift-variance',
+            'approve-shift-cash-movement',
         ])->unique()->values();
 
         foreach ($permissions as $perm) {
@@ -65,6 +73,10 @@ class RolePermissionSeeder extends Seeder
         $branchRoleService = app(BranchRoleService::class);
 
         foreach (Branch::query()->get() as $branch) {
+            Register::firstOrCreate(
+                ['branch_id' => $branch->id, 'code' => 'MAIN'],
+                ['name' => 'Main Register', 'is_active' => true]
+            );
             $admin = Role::firstOrCreate([
                 'name' => $branchRoleService->internalNameForBranch('admin', $branch),
                 'guard_name' => 'web',
@@ -93,6 +105,13 @@ class RolePermissionSeeder extends Seeder
                 'view-reports',
                 'view-customers',
                 'view-vendors',
+                'view-register-shifts',
+                'open-register-shift',
+                'close-own-register-shift',
+                'manage-register-shifts',
+                'record-shift-cash-movement',
+                'approve-shift-variance',
+                'approve-shift-cash-movement',
             ])->get());
 
             $delivery = Role::firstOrCreate([
@@ -118,6 +137,10 @@ class RolePermissionSeeder extends Seeder
                 'view-customers',
                 'view-vendors',
                 'view-products',
+                'view-register-shifts',
+                'open-register-shift',
+                'close-own-register-shift',
+                'record-shift-cash-movement',
             ])->get());
         }
 

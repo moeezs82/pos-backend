@@ -54,6 +54,7 @@ class CustomerPaymentService
             'customer_id' => $data['customer_id'],
             'sale_id' => $data['sale_id'] ?? null,
             'branch_id'   => $data['branch_id'],
+            'register_shift_id' => $data['register_shift_id'] ?? null,
             'received_at' => $data['received_at'] ?? now()->toDateString(),
             'method'      => $data['method'],
             'amount'      => round($data['amount'], 2),
