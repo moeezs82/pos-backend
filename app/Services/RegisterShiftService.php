@@ -27,7 +27,7 @@ class RegisterShiftService
             if (RegisterShift::where('register_id', $register->id)->where('status', 'open')->exists()) {
                 throw ValidationException::withMessages(['register_id' => ['This register already has an open shift.']]);
             }
-            if (RegisterShift::where('cashier_id', $user->id)->where('status', 'open')->exists()) {
+            if (RegisterShift::where('cashier_id', $user->id)->where('branch_id', $user->branch_id)->where('status', 'open')->exists()) {
                 throw ValidationException::withMessages(['cashier' => ['You already have an open register shift.']]);
             }
 

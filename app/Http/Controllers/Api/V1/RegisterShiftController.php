@@ -50,6 +50,7 @@ class RegisterShiftController extends Controller
     }
     public function active(Request $request, BranchContextService $branches, RegisterShiftService $service) {
         $q = RegisterShift::with(['register', 'cashier:id,name'])
+            ->where('branch_id', $branches->requireBranchId($request))
             ->where('status', 'open')
             ->where(function ($query) use ($request) {
                 $query->where('cashier_id', $request->user()->id)

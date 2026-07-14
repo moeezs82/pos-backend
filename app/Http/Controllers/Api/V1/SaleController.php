@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Models\StockMovement;
 use App\Services\BranchContextService;
 use App\Services\BranchRoleService;
+use App\Services\InvoiceSequenceService;
 use App\Services\ProductBranchService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -47,6 +48,7 @@ class SaleController extends Controller
             $search = $request->search;
             $query->where(function ($q) use ($search) {
                 $q->where('invoice_no', 'like', "%$search%")
+                    ->orWhere('offline_invoice_no', 'like', "%$search%")
                     ->orWhereHas('customer', function ($c) use ($search) {
                         $c->where('first_name', 'like', "%$search%")
                             ->orWhere('last_name', 'like', "%$search%")
@@ -165,9 +167,13 @@ class SaleController extends Controller
             // Offline-sync idempotency (handover doc §1.1-1.3). Both optional
             // and additive — online sales that omit them behave exactly as
             // before.
-            'client_ref'  => 'nullable|uuid',
-            'occurred_at' => 'nullable|date',
+            'client_ref'         => 'nullable|uuid',
+            'occurred_at'        => 'nullable|date',
             'register_shift_client_ref' => 'nullable|uuid',
+            // Customer-friendly offline receipt reference generated on-device.
+            // Never trusted as an official invoice number — that is always
+            // allocated by InvoiceSequenceService on the backend.
+            'offline_invoice_no' => 'nullable|string|max:80',
         ]);
 
         // Idempotent replay: if this exact client_ref was already synced
@@ -182,9 +188,11 @@ class SaleController extends Controller
             $existing = Sale::where('client_ref', $data['client_ref'])->first();
             if ($existing) {
                 return ApiResponse::success([
-                    'sale' => $existing->fresh(['items', 'payments']),
-                    'receipts' => null,
-                    'already_existed' => true,
+                    'sale'                => $existing->fresh(['items', 'payments']),
+                    'receipts'            => null,
+                    'already_existed'     => true,
+                    'invoice_no'          => $existing->invoice_no,
+                    'offline_invoice_no'  => $existing->offline_invoice_no,
                 ], 'Sale already recorded (idempotent replay)');
             }
         }
@@ -239,6 +247,9 @@ class SaleController extends Controller
         $productBranches->assertProductsBelongToBranch(collect($data['items'])->pluck('product_id'), $branchId);
 
         return DB::transaction(function () use ($data, $branchId, $registerShift) {
+            // Resolve invoice sequence service once per transaction.
+            $invoiceSequencer = app(InvoiceSequenceService::class);
+
             // totals
             $subtotal = collect($data['items'])->sum(function ($i) {
                 $qty   = (float)($i['quantity']      ?? 0);
@@ -267,11 +278,17 @@ class SaleController extends Controller
             // online sales (unchanged behaviour).
             $occurredAt = !empty($data['occurred_at']) ? \Carbon\Carbon::parse($data['occurred_at']) : now();
 
+            // Allocate a branch-local daily invoice number inside this transaction.
+            // InvoiceSequenceService uses a row-level lock on invoice_sequences so
+            // concurrent sales in the same branch serialise safely here.
+            $invoiceNo = $invoiceSequencer->allocate($branchId, $occurredAt);
+
             // create sale header
             try {
                 $sale = Sale::create([
-                    'invoice_no'  => $this->generateInvoiceNo($occurredAt),
-                    'client_ref'  => $data['client_ref'] ?? null,
+                    'invoice_no'         => $invoiceNo,
+                    'offline_invoice_no' => $data['offline_invoice_no'] ?? null,
+                    'client_ref'         => $data['client_ref'] ?? null,
                     'invoice_date' => $occurredAt->toDateString(),
                     'customer_id' => $data['customer_id'] ?? null,
                     'vendor_id'   => $data['vendor_id'] ?? null,
@@ -302,9 +319,11 @@ class SaleController extends Controller
                     $existing = Sale::where('client_ref', $data['client_ref'])->first();
                     if ($existing) {
                         return ApiResponse::success([
-                            'sale' => $existing->fresh(['items', 'payments']),
-                            'receipts' => null,
-                            'already_existed' => true,
+                            'sale'               => $existing->fresh(['items', 'payments']),
+                            'receipts'           => null,
+                            'already_existed'    => true,
+                            'invoice_no'         => $existing->invoice_no,
+                            'offline_invoice_no' => $existing->offline_invoice_no,
                         ], 'Sale already recorded (idempotent replay)');
                     }
                 }
@@ -421,8 +440,10 @@ class SaleController extends Controller
             // $this->updatePaymentStatus($sale);
 
             return ApiResponse::success([
-                'sale' => $sale->fresh(['items', 'payments']),
-                'receipts' => $createdReceipts ?: null,
+                'sale'               => $sale->fresh(['items', 'payments']),
+                'receipts'           => $createdReceipts ?: null,
+                'invoice_no'         => $sale->invoice_no,
+                'offline_invoice_no' => $sale->offline_invoice_no,
             ], 'Sale created and posted to ledger');
         });
     }
@@ -606,73 +627,6 @@ class SaleController extends Controller
     }
 
     /**
-     * Collision-safe per-day invoice number (handover doc G2).
-     *
-     * MUST be called inside a DB transaction (store() already is): it takes a
-     * row-level lock on the day's counter, so two concurrent syncs serialise
-     * on it and can never read the same sequence and collide on the
-     * invoice_no UNIQUE index. Replaces the old read-MAX-then-+1, which had no
-     * lock and threw a 500 (→ queued sale wrongly marked failed) under the
-     * simultaneous reconnect burst this system is built for.
-     */
-    private function generateInvoiceNo(?\Carbon\Carbon $forDate = null): string
-    {
-        $forDate = $forDate ?? now();
-        $datePart = $forDate->format('Ymd'); // 20260419
-        $prefix = "INV-{$datePart}-";
-
-        // Bounded loop only to cover the one narrow race the lock can't: the
-        // very first sale of a day, where two transactions both find no
-        // counter row and both try to seed it — the PK on `ymd` lets exactly
-        // one win, and the loser simply loops back into the locked-increment
-        // path. Steady state is a single locked read+update, no looping.
-        for ($attempt = 0; $attempt < 5; $attempt++) {
-            $row = DB::table('invoice_counters')
-                ->where('ymd', $datePart)
-                ->lockForUpdate()
-                ->first();
-
-            if ($row) {
-                $nextNumber = (int) $row->next_seq;
-                DB::table('invoice_counters')
-                    ->where('ymd', $datePart)
-                    ->update(['next_seq' => $nextNumber + 1, 'updated_at' => now()]);
-
-                return $prefix . str_pad((string) $nextNumber, 3, '0', STR_PAD_LEFT);
-            }
-
-            // No counter row yet. Seed from any sales already present for this
-            // day (e.g. rows created before this counter table shipped) so
-            // numbering continues rather than restarting at 1 and colliding.
-            $lastInvoice = Sale::where('invoice_no', 'like', $prefix . '%')
-                ->orderByDesc('invoice_no')
-                ->value('invoice_no');
-            $existingMax = $lastInvoice ? (int) substr($lastInvoice, strlen($prefix)) : 0;
-            $nextNumber = $existingMax + 1;
-
-            try {
-                DB::table('invoice_counters')->insert([
-                    'ymd'        => $datePart,
-                    'next_seq'   => $nextNumber + 1,
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ]);
-
-                return $prefix . str_pad((string) $nextNumber, 3, '0', STR_PAD_LEFT);
-            } catch (\Illuminate\Database\QueryException $e) {
-                // Another transaction seeded the row first — loop back and
-                // take the locked-increment path instead.
-                if ($this->isUniqueViolation($e)) {
-                    continue;
-                }
-                throw $e;
-            }
-        }
-
-        throw new \RuntimeException('Could not allocate an invoice number for ' . $datePart);
-    }
-
-    /**
      * True if the given QueryException is a unique-constraint violation
      * (MySQL error 1062 / SQLSTATE 23000). Used to catch the client_ref
      * race in store() without swallowing other DB errors.
@@ -701,12 +655,13 @@ class SaleController extends Controller
         $refs = collect($data['client_refs'])->unique()->values();
 
         $found = Sale::whereIn('client_ref', $refs)
-            ->get(['id', 'client_ref', 'invoice_no', 'total'])
+            ->get(['id', 'client_ref', 'invoice_no', 'offline_invoice_no', 'total'])
             ->map(fn ($sale) => [
-                'client_ref' => $sale->client_ref,
-                'id'         => $sale->id,
-                'invoice_no' => $sale->invoice_no,
-                'total'      => (float) $sale->total,
+                'client_ref'         => $sale->client_ref,
+                'id'                 => $sale->id,
+                'invoice_no'         => $sale->invoice_no,
+                'offline_invoice_no' => $sale->offline_invoice_no,
+                'total'              => (float) $sale->total,
             ])
             ->values();
 
