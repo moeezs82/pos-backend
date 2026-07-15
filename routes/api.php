@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\V1\AccountController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BranchController;
+use App\Http\Controllers\Api\V1\SubscriptionController;
 use App\Http\Controllers\Api\V1\BrandController;
 use App\Http\Controllers\Api\V1\CashBookController;
 use App\Http\Controllers\Api\V1\CashLedgerController;
@@ -42,11 +43,20 @@ Route::get('/test', function () {
 Route::prefix('v1')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
 
-    Route::middleware(['auth:sanctum', 'branch.context'])->group(function () {
-        Route::post('/logout', [AuthController::class, 'logout']);
-        Route::get('/me', [AuthController::class, 'me']);
-        Route::post('auth/verify-password', [AuthController::class, 'verifyPassword']);
-        Route::post('/switch-branch', [AuthController::class, 'switchBranch'])->name('switch-branch');
+    Route::middleware(['auth:sanctum', 'branch.context', 'branch.subscription'])->group(function () {
+        // ── Routes exempt from subscription enforcement ────────────────────────
+        // These must remain accessible even when a branch is expired/suspended so
+        // the Flutter client can display the lock screen, switch to another branch,
+        // log out, or the owner can manage the subscription.
+        Route::post('/logout', [AuthController::class, 'logout'])
+            ->withoutMiddleware('branch.subscription');
+        Route::get('/me', [AuthController::class, 'me'])
+            ->withoutMiddleware('branch.subscription');
+        Route::post('auth/verify-password', [AuthController::class, 'verifyPassword'])
+            ->withoutMiddleware('branch.subscription');
+        Route::post('/switch-branch', [AuthController::class, 'switchBranch'])
+            ->name('switch-branch')
+            ->withoutMiddleware('branch.subscription');
 
         Route::get('/registers', [RegisterShiftController::class, 'registers'])->middleware('permission:view-register-shifts');
         Route::post('/registers', [RegisterShiftController::class, 'storeRegister'])->middleware('permission:manage-register-shifts');
@@ -61,9 +71,37 @@ Route::prefix('v1')->group(function () {
             Route::post('/{shift}/force-close', [RegisterShiftController::class, 'forceClose'])->middleware('permission:manage-register-shifts');
         });
 
+        // ── Subscription status (exempt — needed even when branch is locked) ───
+        // Allows Flutter to query the branch's subscription state to display the
+        // lock screen without being blocked by CheckBranchSubscription itself.
+        // The old unauthenticated closure at /app-lock-status is replaced by this
+        // authenticated controller method.  The path is preserved as an alias so
+        // existing tooling that may poll /app-lock-status does not break.
+        Route::get('/subscription/status', [SubscriptionController::class, 'status'])
+            ->withoutMiddleware('branch.subscription');
+        Route::post('/app-lock-status', [SubscriptionController::class, 'status'])
+            ->withoutMiddleware('branch.subscription');
+
+        // ── Owner subscription management (exempt from subscription check) ────
+        // These routes are protected by their own isMasterAdmin() gate inside
+        // the controller and do not need the per-branch subscription guard.
+        Route::prefix('/subscriptions')->group(function () {
+            Route::get('/', [SubscriptionController::class, 'index'])
+                ->withoutMiddleware('branch.subscription');
+            Route::get('/{branchId}', [SubscriptionController::class, 'show'])
+                ->withoutMiddleware('branch.subscription');
+            Route::put('/{branchId}', [SubscriptionController::class, 'update'])
+                ->withoutMiddleware('branch.subscription');
+            Route::get('/{branchId}/audit', [SubscriptionController::class, 'audit'])
+                ->withoutMiddleware('branch.subscription');
+        });
+
         // Branches
+        // GET /branches is exempt: the lock screen "Switch Branch" action needs
+        // to list available branches even while the current branch is expired.
         Route::get('/branches', [BranchController::class, 'index'])
-            ->middleware('permission:view-branches');
+            ->middleware('permission:view-branches')
+            ->withoutMiddleware('branch.subscription');
         Route::post('/branches', [BranchController::class, 'store'])
             ->middleware('permission:manage-branches');
         Route::get('/branches/{id}', [BranchController::class, 'show'])
@@ -289,32 +327,10 @@ Route::prefix('v1')->group(function () {
             Route::get('/day-details', [CashLedgerController::class, 'dayBookDetails']); // one day's transactions, labelled
         });
 
-        Route::post('/app-lock-status', function () {
-            $expiryDate = Carbon\Carbon::parse('2026-12-31 23:59:59');
-
-            $now = now();
-            $remainingDays = max(0, (int) ceil($now->diffInSeconds($expiryDate, false) / 86400));
-
-            $isLocked = $now->greaterThan($expiryDate);
-
-            // show reminder alert when 7 or fewer days are left and app is not locked yet
-            $showAlert = !$isLocked && $remainingDays <= 7;
-
-            return response()->json([
-                'success' => true,
-                'data' => [
-                    'is_locked' => $isLocked,
-                    'message' => $isLocked
-                        ? 'Your application access has expired. Please contact developer.'
-                        : ($showAlert
-                            ? "Your application will expire in {$remainingDays} day(s). Please contact developer."
-                            : 'Application is active.'),
-                    'pass_key' => 'moeez@subscription',
-                    'show_alert' => $showAlert,
-                    'remaining_days' => $remainingDays,
-                ],
-            ]);
-        })->withoutMiddleware('auth:sanctum');
+        // /app-lock-status is now handled above as an authenticated alias for
+        // /subscription/status — the old hard-coded closure has been removed.
+        // The pass_key field has been deleted: it was exposed to every client
+        // and served no verified-security purpose.
 
         // Printer settings: real, persisted, branch-aware (replaces the old
         // hardcoded placeholder values). Any signed-in user can read the

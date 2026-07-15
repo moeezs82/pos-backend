@@ -5,8 +5,11 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
 use App\Models\Branch;
+use App\Models\BranchSubscription;
+use App\Models\SubscriptionAudit;
 use App\Services\BranchContextService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class BranchController extends Controller
 {
@@ -35,7 +38,37 @@ class BranchController extends Controller
             'is_active' => 'boolean',
         ]);
 
-        $branch = Branch::create($data);
+        $branch = DB::transaction(function () use ($data, $request) {
+            $branch = Branch::create($data);
+
+            // Every new branch must have an explicit subscription record so the
+            // fail-closed enforcement does not immediately block it.  We create
+            // an active / no-expiry row which the SaaS Owner can configure later.
+            $sub = BranchSubscription::create([
+                'branch_id'  => $branch->id,
+                'status'     => 'active',
+                'started_at' => now(),
+                'managed_by' => $request->user()->id,
+            ]);
+
+            SubscriptionAudit::create([
+                'branch_id'      => $branch->id,
+                'changed_by'     => $request->user()->id,
+                'old_status'     => null,
+                'new_status'     => 'active',
+                'old_expires_at' => null,
+                'new_expires_at' => null,
+                'action'         => 'create',
+                'reason'         => 'Auto-created with new branch.',
+                'metadata'       => [
+                    'branch_name' => $branch->name,
+                    'changed_by'  => $request->user()->name,
+                ],
+            ]);
+
+            return $branch;
+        });
+
         return ApiResponse::success(['branch' => $branch], 'Branch created successfully', 201);
     }
 
