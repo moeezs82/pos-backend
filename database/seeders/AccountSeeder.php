@@ -4,6 +4,7 @@ namespace Database\Seeders;
 
 use App\Models\Account;
 use App\Models\AccountType;
+use App\Models\Branch;
 use App\Models\PaymentMethodAccount;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
@@ -81,6 +82,21 @@ class AccountSeeder extends Seeder
                 ['method' => $method, 'branch_id' => null],
                 ['account_id' => $account->id]
             );
+        }
+
+        // Fresh installations seed the first branch before account templates.
+        // Copy those templates explicitly so runtime posting never needs a
+        // cross-branch/global fallback.
+        if (\Illuminate\Support\Facades\Schema::hasColumn('payment_method_accounts', 'is_inherited')) {
+            $templates = PaymentMethodAccount::whereNull('branch_id')->get(['method', 'account_id']);
+            foreach (Branch::query()->pluck('id') as $branchId) {
+                foreach ($templates as $template) {
+                    PaymentMethodAccount::firstOrCreate(
+                        ['method' => $template->method, 'branch_id' => $branchId],
+                        ['account_id' => $template->account_id, 'is_inherited' => true]
+                    );
+                }
+            }
         }
     }
 }

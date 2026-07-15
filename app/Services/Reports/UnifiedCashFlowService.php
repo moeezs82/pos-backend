@@ -508,7 +508,7 @@ class UnifiedCashFlowService
         if (($r->has_ap ?? 0) || in_array($ref, ['VendorPayment', 'PurchasePayment', 'Purchase'], true)) {
             return ['vendor_payments', self::BUCKET_LABELS['vendor_payments']];
         }
-        if (in_array($ref, ['SaleReturnRefund', 'SaleReturn'], true)) {
+        if (in_array($ref, ['SaleRefund', 'SaleReturnRefund', 'SaleReturn'], true)) {
             return ['refunds_out', self::BUCKET_LABELS['refunds_out']];
         }
         if (($r->has_expense ?? 0)) {

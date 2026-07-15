@@ -217,6 +217,8 @@ Route::prefix('v1')->group(function () {
         Route::prefix('accounts')->middleware('permission:manage-accounts')->group(function () {
             Route::get('/types', [AccountController::class, 'getTypes']);
             Route::get('/',      [AccountController::class, 'index']);
+            Route::get('/payment-mappings', [AccountController::class, 'paymentMappings']);
+            Route::put('/payment-mappings/{branchId}/{method}', [AccountController::class, 'updatePaymentMapping']);
 
             Route::post('/',        [AccountController::class, 'store']);
             Route::get('/{id}',   [AccountController::class, 'show']);

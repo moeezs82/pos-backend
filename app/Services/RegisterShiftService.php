@@ -48,6 +48,7 @@ class RegisterShiftService
         $sales = DB::table('sales')->where('register_shift_id', $shift->id)->whereNull('deleted_at');
         $receipts = DB::table('receipts')->where('register_shift_id', $shift->id);
         $refunds = DB::table('sale_return_refunds')->where('register_shift_id', $shift->id);
+        $inlineRefunds = DB::table('sale_refunds')->where('register_shift_id', $shift->id);
         $ledger = DB::table('cash_ledger_entries')->where('register_shift_id', $shift->id)->where('status', 'posted')->whereNull('deleted_at');
         $moves = DB::table('shift_cash_movements')->where('register_shift_id', $shift->id);
         $cashTransactions = DB::table('cash_transactions')->where('register_shift_id', $shift->id)
@@ -61,14 +62,20 @@ class RegisterShiftService
         $cashSales = (float) (clone $receipts)->where('method', 'cash')->whereNotNull('sale_id')->sum('amount');
         $methods = (clone $receipts)->select('method', DB::raw('SUM(amount) amount'))->groupBy('method')->pluck('amount', 'method');
         $customerCashReceipts = (float) (clone $receipts)->where('method', 'cash')->whereNull('sale_id')->sum('amount');
-        $cashRefunds = (float) (clone $refunds)->where('method', 'cash')->sum('amount');
+        $cashRefunds = (float) (clone $refunds)->where('method', 'cash')->sum('amount')
+            + (float) (clone $inlineRefunds)->where('method', 'cash')->sum('amount');
         $ledgerIn = (float) (clone $ledger)->where('method', 'cash')->where('direction', 'in')->sum('amount');
         $ledgerOut = (float) (clone $ledger)->where('method', 'cash')->where('direction', 'out')->sum('amount');
         $manualIn = (float) (clone $moves)->where('direction', 'in')->sum('amount');
         $manualOut = (float) (clone $moves)->where('direction', 'out')->sum('amount');
         $cashTxnIn = (float) (clone $cashTransactions)->where('type', 'transfer_in')->sum('amount');
         $cashTxnOut = (float) (clone $cashTransactions)->whereIn('type', ['payment','expense','transfer_out'])
-            ->where(function ($q) { $q->whereNull('source_type')->orWhere('source_type', '!=', \App\Models\SaleReturnRefund::class); })->sum('amount');
+            ->where(function ($q) {
+                $q->whereNull('source_type')->orWhereNotIn('source_type', [
+                    \App\Models\SaleReturnRefund::class,
+                    \App\Models\SaleRefund::class,
+                ]);
+            })->sum('amount');
         $expected = round((float) $shift->opening_cash + $cashSales + $customerCashReceipts + $ledgerIn + $manualIn + $cashTxnIn - $cashRefunds - $ledgerOut - $manualOut - $cashTxnOut, 2);
 
         return [

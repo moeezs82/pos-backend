@@ -17,18 +17,25 @@ class CashSyncService
     {
         $q = PaymentMethodAccount::query()->where('method', $method);
 
-        // 1) Try exact branch first
+        // Branch operations must use an explicit branch mapping. A silent
+        // global fallback would share accounting configuration between
+        // otherwise independent businesses.
         if ($branchId) {
             $map = (clone $q)->where('branch_id', $branchId)->first();
             if ($map) return $map->account;
+
+            throw ValidationException::withMessages([
+                'account_id' => "No account mapping found for payment method [$method] (branch $branchId). Configure it from Master Admin settings."
+            ]);
         }
 
-        // 2) Fallback to global (branch_id NULL)
+        // Global rows are templates only and may be used when no branch
+        // operation is being performed.
         $map = (clone $q)->whereNull('branch_id')->first();
         if ($map) return $map->account;
 
         throw ValidationException::withMessages([
-            'account_id' => "No account mapping found for payment method [$method]" . ($branchId ? " (branch $branchId)" : '') . "."
+            'account_id' => "No global account mapping template found for payment method [$method]."
         ]);
     }
 

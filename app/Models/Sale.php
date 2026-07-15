@@ -9,6 +9,19 @@ class Sale extends Model
 {
     use SoftDeletes;
 
+    protected static function booted(): void
+    {
+        static::updated(function (Sale $sale) {
+            $refund = data_get($sale->meta, 'refund_snapshot');
+            if (!$refund || (float) $sale->total >= 0 || $sale->refund()->exists()) {
+                return;
+            }
+
+            app(\App\Services\SaleRefundService::class)
+                ->createForNegativeSale($sale, (array) $refund);
+        });
+    }
+
     protected $fillable = [
         'invoice_no',
         'offline_invoice_no',
@@ -49,6 +62,11 @@ class Sale extends Model
     public function payments()
     {
         return $this->hasMany(Receipt::class);
+    }
+
+    public function refund()
+    {
+        return $this->hasOne(SaleRefund::class);
     }
 
     public function customer()
