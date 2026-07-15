@@ -307,26 +307,71 @@ class SaleController extends Controller
                     'sale_type' => $data['sale_type'] ?? 'dine_in',
                 ]);
             } catch (\Illuminate\Database\QueryException $e) {
-                // Race-safety net (handover doc §1.2): the pre-transaction
-                // existing-client_ref check above handles the common case,
-                // but two near-simultaneous sync attempts for the same
-                // queued sale can both pass that check before either has
-                // inserted. The DB `unique` constraint on client_ref is
-                // what actually stops the duplicate row; if it fires here,
-                // don't 500 — re-fetch and return the row the other
-                // request just created, same as the idempotent-replay path.
-                if (!empty($data['client_ref']) && $this->isUniqueViolation($e)) {
-                    $existing = Sale::where('client_ref', $data['client_ref'])->first();
-                    if ($existing) {
-                        return ApiResponse::success([
-                            'sale'               => $existing->fresh(['items', 'payments']),
-                            'receipts'           => null,
-                            'already_existed'    => true,
-                            'invoice_no'         => $existing->invoice_no,
-                            'offline_invoice_no' => $existing->offline_invoice_no,
-                        ], 'Sale already recorded (idempotent replay)');
+                if ($this->isUniqueViolation($e)) {
+                    // ── Path 1: client_ref collision → idempotent replay ──────────────
+                    // Two concurrent sync attempts for the same queued sale can both
+                    // slip past the pre-transaction client_ref check above before
+                    // either has committed. The DB UNIQUE constraint on client_ref is
+                    // the real stop; recover by returning the row the other request
+                    // just created, identical to the pre-transaction idempotent path.
+                    if (!empty($data['client_ref'])) {
+                        $existing = Sale::where('client_ref', $data['client_ref'])->first();
+                        if ($existing) {
+                            return ApiResponse::success([
+                                'sale'               => $existing->fresh(['items', 'payments']),
+                                'receipts'           => null,
+                                'already_existed'    => true,
+                                'invoice_no'         => $existing->invoice_no,
+                                'offline_invoice_no' => $existing->offline_invoice_no,
+                            ], 'Sale already recorded (idempotent replay)');
+                        }
+                    }
+
+                    // ── Path 2: offline_invoice_no collision → 409 Conflict ───────────
+                    // The UNIQUE constraint fired on offline_invoice_no, not client_ref.
+                    // A different sale already holds this offline reference number.
+                    // Root causes: two POS terminals sharing the same register_code, or
+                    // the device's offline sequence counter was reset after an app
+                    // reinstall / data clear. This is a genuine collision that a human
+                    // must reconcile. Return 409 with a structured error so Flutter
+                    // dead-letters the queued item immediately — without this, Flutter
+                    // treats the 500 as retryable and hammers the endpoint six times
+                    // before giving up with a cryptic message.
+                    if (!empty($data['offline_invoice_no'])) {
+                        $colliding = Sale::where('offline_invoice_no', $data['offline_invoice_no'])->first();
+                        if ($colliding) {
+                            // Defensive: if the colliding row actually has the same
+                            // client_ref, Path 1 above should have caught it already;
+                            // handle it here too so we never 409 a true idempotent replay.
+                            if (
+                                !empty($data['client_ref'])
+                                && (string) $colliding->client_ref === (string) $data['client_ref']
+                            ) {
+                                return ApiResponse::success([
+                                    'sale'               => $colliding->fresh(['items', 'payments']),
+                                    'receipts'           => null,
+                                    'already_existed'    => true,
+                                    'invoice_no'         => $colliding->invoice_no,
+                                    'offline_invoice_no' => $colliding->offline_invoice_no,
+                                ], 'Sale already recorded (idempotent replay)');
+                            }
+
+                            return response()->json([
+                                'success' => false,
+                                'message' => 'Offline invoice number already used by a different sale. '
+                                    . 'Two terminals may share the same register code, or the offline '
+                                    . 'sequence was reset on this device (reinstall / data clear). '
+                                    . 'This queued sale must be reviewed and manually reconciled.',
+                                'code'    => 'OFFLINE_INVOICE_NO_COLLISION',
+                                'data'    => [
+                                    'offline_invoice_no'     => $data['offline_invoice_no'],
+                                    'conflicting_invoice_no' => $colliding->invoice_no,
+                                ],
+                            ], 409);
+                        }
                     }
                 }
+
                 throw $e;
             }
 
