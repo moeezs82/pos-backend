@@ -41,7 +41,9 @@ class VendorPaymentService
             'vendor_id' => 'nullable|exists:vendors,id',
             'branch_id' => 'nullable|exists:branches,id',
             'paid_at'   => 'nullable|date',
-            'method'    => 'required|string|in:cash,bank,card,wallet',
+            // Any well-formed code; the resolver validates it against the
+            // branch (exists + active + asset account) below.
+            'method'    => 'required|string',
             'amount'    => 'required|numeric|min:0.01',
             'memo' => 'nullable|string',
             'reference' => 'nullable|string',

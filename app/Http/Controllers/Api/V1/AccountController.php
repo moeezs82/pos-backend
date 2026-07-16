@@ -135,7 +135,9 @@ class AccountController extends Controller
         ]);
 
         abort_unless(DB::table('branches')->where('id', $branchId)->exists(), 404);
-        abort_unless(in_array($method, ['cash', 'bank', 'card', 'wallet'], true), 404);
+        // Accept any well-formed machine code so dynamically configured methods
+        // (KNET, cheque, ...) can be remapped, not just the legacy four.
+        abort_unless((bool) preg_match('/^[a-z0-9_\-]+$/', $method), 404);
 
         $account = Account::query()
             ->with('type:id,code,name')

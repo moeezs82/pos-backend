@@ -145,13 +145,25 @@ class PurchaseController extends Controller
             'receive_now' => 'boolean',
             'items.*.received_qty' => 'nullable|numeric|min:0',
 
-            // optional payment block
+            // optional payment block — legacy single object (kept for
+            // backward compatibility during rollout).
             'payment' => 'nullable|array',
-            'payment.method' => 'required_with:payment|string|in:cash,bank,card,wallet',
+            'payment.method' => 'required_with:payment|string',
             'payment.amount' => 'required_with:payment|numeric|min:0.01',
             'payment.paid_at' => 'nullable|date',
             'payment.reference' => 'nullable|string',
-            'payment.note' => 'nullable|string'
+            'payment.note' => 'nullable|string',
+
+            // Preferred: split-tender array. Each row is preserved as its own
+            // vendor payment (method + amount + optional reference) — never
+            // collapsed. Method is validated against the branch by the resolver.
+            'payments' => 'nullable|array',
+            'payments.*.method'    => 'required_with:payments|string',
+            'payments.*.amount'    => 'required_with:payments|numeric|min:0.01',
+            'payments.*.paid_at'   => 'nullable|date',
+            'payments.*.reference' => 'nullable|string',
+            'payments.*.note'      => 'nullable|string',
+            'payments.*.client_ref'=> 'nullable|string',
         ]);
 
         $receiveNow = (bool)($data['receive_now'] ?? false);
@@ -242,18 +254,17 @@ class PurchaseController extends Controller
             // Post the **vendor bill** to GL (AP)
             app(\App\Services\PurchasePostingService::class)->postVendorBill($p, $p->invoice_date);
 
-            // OPTIONAL: process immediate vendor payment (if provided)
-            $payment = $data['payment'] ?? null;
-            $vp = null;
-            if ($payment) {
-                // If allocations not provided, auto-allocate the payment to this purchase
-                // $allocations = $payment['allocations'] ?? null;
-                // if (empty($allocations)) {
-                //     $allocations = [
-                //         ['purchase_id' => $p->id, 'amount' => min((float)$payment['amount'], (float)$p->total)]
-                //     ];
-                // }
+            // Process immediate vendor payment(s). Prefer the split-tender
+            // `payments[]` array; fall back to the legacy single `payment{}`.
+            // Every row becomes its own vendor payment so a Cash + Bank split
+            // stays two records, each posting its own cash/bank journal.
+            $rows = $data['payments'] ?? null;
+            if (empty($rows) && !empty($data['payment'])) {
+                $rows = [$data['payment']];
+            }
 
+            $createdPayments = [];
+            foreach (($rows ?? []) as $payment) {
                 $vpData = [
                     'vendor_id'   => $p->vendor_id,
                     'branch_id'   => $p->branch_id,
@@ -261,19 +272,21 @@ class PurchaseController extends Controller
                     'paid_at'     => $payment['paid_at'] ?? now()->toDateString(),
                     'method'      => $payment['method'],
                     'amount'      => $payment['amount'],
-                    'memo'   => $payment['reference'] ?? "Purchase time payment for $p->invoice_no",
-                    'reference'   => $payment['reference'] ?? "Purchase time payment for $p->invoice_no",
+                    // Document wording lives in the memo; the user's reference
+                    // (cheque no, bank ref, ...) is preserved verbatim.
+                    'memo'        => "Purchase time payment for {$p->invoice_no}",
+                    'reference'   => $payment['reference'] ?? null,
                     'note'        => $payment['note'] ?? null,
-                    // 'allocations' => $allocations,
+                    'client_ref'  => $payment['client_ref'] ?? null,
                 ];
 
-                // Use the reusable service
-                $vp = $vendorPaymentService->create($vpData);
+                $createdPayments[] = $vendorPaymentService->create($vpData);
             }
 
-            // return both purchase and optional payment for UI
+            // return both purchase and any payments for UI
             return ApiResponse::success([
-                'purchase' => $p->load('items'),
+                'purchase' => $p->load(['items', 'payments']),
+                'payments' => $createdPayments ?: null,
             ], 'Purchase created');
         });
     }

@@ -13,30 +13,17 @@ use Illuminate\Validation\ValidationException;
 
 class CashSyncService
 {
-    public function mapMethodToAccount(string $method, ?int $branchId = null): Account
+    /**
+     * Resolve a payment method to its posting account for a branch.
+     *
+     * Delegates to the central PaymentMethodService so branch scoping, the
+     * active check and the asset-account guard are enforced in one place.
+     *
+     * @param  bool  $allowInactive  Pass true only for historical display.
+     */
+    public function mapMethodToAccount(string $method, ?int $branchId = null, bool $allowInactive = false): Account
     {
-        $q = PaymentMethodAccount::query()->where('method', $method);
-
-        // Branch operations must use an explicit branch mapping. A silent
-        // global fallback would share accounting configuration between
-        // otherwise independent businesses.
-        if ($branchId) {
-            $map = (clone $q)->where('branch_id', $branchId)->first();
-            if ($map) return $map->account;
-
-            throw ValidationException::withMessages([
-                'account_id' => "No account mapping found for payment method [$method] (branch $branchId). Configure it from Master Admin settings."
-            ]);
-        }
-
-        // Global rows are templates only and may be used when no branch
-        // operation is being performed.
-        $map = (clone $q)->whereNull('branch_id')->first();
-        if ($map) return $map->account;
-
-        throw ValidationException::withMessages([
-            'account_id' => "No global account mapping template found for payment method [$method]."
-        ]);
+        return app(PaymentMethodService::class)->accountFor($branchId, $method, $allowInactive);
     }
 
     /** Sales payment -> receipt */

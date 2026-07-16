@@ -31,12 +31,9 @@ class SaleRefundService
             ]);
         }
 
+        // Resolve the refund method dynamically against the sale branch
+        // (exists + active + asset). No fixed method whitelist.
         $method = $data['method'] ?? 'cash';
-        if (!in_array($method, ['cash', 'bank', 'card', 'wallet'], true)) {
-            throw ValidationException::withMessages([
-                'refund.method' => ['Refund method must be cash, bank, card, or wallet.'],
-            ]);
-        }
         $account = $this->cashSync->mapMethodToAccount($method, (int) $sale->branch_id);
         $refund = SaleRefund::create([
             'sale_id' => $sale->id,

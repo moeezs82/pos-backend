@@ -31,6 +31,11 @@ class AccountSeeder extends Seeder
             // Assets
             ['code' => '1000', 'name' => 'Cash in Hand', 'account_type_id' => $map('ASSET')],
             ['code' => '1010', 'name' => 'Bank',         'account_type_id' => $map('ASSET')],
+            // Clearing / holding asset accounts for non-cash tenders so KNET and
+            // Card can be reconciled to Bank later without hard-coding the mapping.
+            ['code' => '1015', 'name' => 'Cheques in Hand', 'account_type_id' => $map('ASSET')],
+            ['code' => '1020', 'name' => 'KNET Clearing',   'account_type_id' => $map('ASSET')],
+            ['code' => '1030', 'name' => 'Card Clearing',   'account_type_id' => $map('ASSET')],
             // Add the canonical AR account your services reference:
             ['code' => '1200', 'name' => 'Accounts Receivable (legacy)', 'account_type_id' => $map('ASSET')],
             ['code' => '1210', 'name' => 'Delivery Boy Cash in Transit', 'account_type_id' => $map('ASSET')],
@@ -60,27 +65,43 @@ class AccountSeeder extends Seeder
             Account::firstOrCreate(['code' => $a['code']], $a);
         }
 
-        // Payment method -> default account mapping
-        $mapMethods = [
-            'cash'   => '1000', // Cash in Hand
-            'bank'   => '1010', // Bank
-            'card'   => '1010', // Card -> Bank
-            'wallet' => '1010', // Wallet -> Bank (or separate wallet account if you want)
+        // Payment method -> default configuration (global templates, branch_id null).
+        // affects_cash_drawer is stored, never inferred from the word "cash".
+        $hasConfigCols = \Illuminate\Support\Facades\Schema::hasColumn('payment_method_accounts', 'affects_cash_drawer');
+
+        $methodDefs = [
+            ['method' => 'cash',   'code' => '1000', 'name' => 'Cash',          'drawer' => true,  'sort' => 1, 'icon' => 'cash'],
+            ['method' => 'bank',   'code' => '1010', 'name' => 'Bank Transfer', 'drawer' => false, 'sort' => 2, 'icon' => 'bank'],
+            ['method' => 'card',   'code' => '1030', 'name' => 'Card',          'drawer' => false, 'sort' => 3, 'icon' => 'card'],
+            ['method' => 'knet',   'code' => '1020', 'name' => 'KNET',          'drawer' => false, 'sort' => 4, 'icon' => 'knet'],
+            ['method' => 'wallet', 'code' => '1010', 'name' => 'Wallet',        'drawer' => false, 'sort' => 5, 'icon' => 'wallet'],
+            ['method' => 'cheque', 'code' => '1015', 'name' => 'Cheque',        'drawer' => false, 'sort' => 6, 'icon' => 'cheque'],
         ];
 
-        foreach ($mapMethods as $method => $acctCode) {
-            $account = Account::where('code', $acctCode)->first();
+        foreach ($methodDefs as $def) {
+            $account = Account::where('code', $def['code'])->first();
             if (!$account) {
                 $account = Account::create([
-                    'account_type_id' => \App\Models\AccountType::where('code','ASSET')->first()->id,
-                    'code' => $acctCode,
-                    'name' => ucfirst($method) . ' Default Account',
+                    'account_type_id' => AccountType::where('code', 'ASSET')->first()->id,
+                    'code' => $def['code'],
+                    'name' => ucfirst($def['method']) . ' Default Account',
                 ]);
             }
 
+            $extra = ['account_id' => $account->id];
+            if ($hasConfigCols) {
+                $extra += [
+                    'display_name'        => $def['name'],
+                    'is_active'           => true,
+                    'affects_cash_drawer' => $def['drawer'],
+                    'sort_order'          => $def['sort'],
+                    'icon_key'            => $def['icon'],
+                ];
+            }
+
             PaymentMethodAccount::firstOrCreate(
-                ['method' => $method, 'branch_id' => null],
-                ['account_id' => $account->id]
+                ['method' => $def['method'], 'branch_id' => null],
+                $extra
             );
         }
 
@@ -88,12 +109,27 @@ class AccountSeeder extends Seeder
         // Copy those templates explicitly so runtime posting never needs a
         // cross-branch/global fallback.
         if (\Illuminate\Support\Facades\Schema::hasColumn('payment_method_accounts', 'is_inherited')) {
-            $templates = PaymentMethodAccount::whereNull('branch_id')->get(['method', 'account_id']);
+            $cols = $hasConfigCols
+                ? ['method', 'account_id', 'display_name', 'is_active', 'affects_cash_drawer', 'sort_order', 'icon_key']
+                : ['method', 'account_id'];
+
+            $templates = PaymentMethodAccount::whereNull('branch_id')->get($cols);
             foreach (Branch::query()->pluck('id') as $branchId) {
                 foreach ($templates as $template) {
+                    $extra = ['account_id' => $template->account_id, 'is_inherited' => true];
+                    if ($hasConfigCols) {
+                        $extra += [
+                            'display_name'        => $template->display_name,
+                            'is_active'           => $template->is_active,
+                            'affects_cash_drawer' => $template->affects_cash_drawer,
+                            'sort_order'          => $template->sort_order,
+                            'icon_key'            => $template->icon_key,
+                        ];
+                    }
+
                     PaymentMethodAccount::firstOrCreate(
                         ['method' => $template->method, 'branch_id' => $branchId],
-                        ['account_id' => $template->account_id, 'is_inherited' => true]
+                        $extra
                     );
                 }
             }

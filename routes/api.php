@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\V1\DeliveryBoyController;
 use App\Http\Controllers\Api\V1\EnterpriseReportController;
 use App\Http\Controllers\Api\V1\ExpenseController;
 use App\Http\Controllers\Api\V1\PaymentController;
+use App\Http\Controllers\Api\V1\PaymentMethodController;
 use App\Http\Controllers\Api\V1\PrinterConfigController;
 use App\Http\Controllers\Api\V1\ProductController;
 use App\Http\Controllers\Api\V1\PurchaseClaimController;
@@ -225,6 +226,23 @@ Route::prefix('v1')->group(function () {
             Route::put('/{id}',   [AccountController::class, 'update']);
             Route::put('/{id}/activate',   [AccountController::class, 'activate']);
             Route::put('/{id}/deactivate', [AccountController::class, 'deactivate']);
+        });
+
+        // ── Dynamic, branch-owned payment methods ──────────────────────────
+        // GET / is operational: any authenticated branch user composing a
+        // sale/purchase/receipt/refund/expense needs the active method list.
+        // All mutations are Master-Admin only (enforced in-controller and by
+        // the manage-accounts permission).
+        Route::prefix('payment-methods')->group(function () {
+            Route::get('/', [PaymentMethodController::class, 'index']);
+
+            Route::middleware('permission:manage-accounts')->group(function () {
+                Route::get('/admin',            [PaymentMethodController::class, 'adminIndex']);
+                Route::post('/',                [PaymentMethodController::class, 'store']);
+                Route::put('/{id}',             [PaymentMethodController::class, 'update']);
+                Route::put('/{id}/activate',    [PaymentMethodController::class, 'activate']);
+                Route::put('/{id}/deactivate',  [PaymentMethodController::class, 'deactivate']);
+            });
         });
 
         // Offline catalog feed (handover doc G1 / Phase 1). Read-only

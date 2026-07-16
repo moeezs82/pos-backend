@@ -36,7 +36,9 @@ class CustomerPaymentService
             'customer_id' => 'nullable|exists:customers,id',
             'branch_id'   => 'nullable|exists:branches,id',
             'received_at' => 'nullable|date',
-            'method'      => 'required|string|in:cash,bank,card,wallet',
+            // Any well-formed code; resolved/validated against the branch by
+            // cashSync->mapMethodToAccount() (exists + active + asset) below.
+            'method'      => 'required|string',
             'amount'      => 'required|numeric|min:0.01',
             'reference'   => 'nullable|string',
             'note'        => 'nullable|string',

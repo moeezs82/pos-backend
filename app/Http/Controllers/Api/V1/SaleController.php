@@ -471,7 +471,9 @@ class SaleController extends Controller
                     'received_at' => $payment['paid_at'] ?? now()->toDateString(),
                     'method'      => $payment['method'] ?? 'cash',
                     'amount'      => (float)$payment['amount'],
-                    'reference'   => $payment['reference'] ?? "Payment for Sale #{$sale->invoice_no}",
+                    // Preserve the user's reference (KNET id, approval code, …);
+                    // document wording stays in the memo only.
+                    'reference'   => $payment['reference'] ?? null,
                     'memo'   => "Payment for Sale #{$sale->invoice_no}",
                     'note'        => $payment['note'] ?? null,
                     // 'allocations' => $allocations,
