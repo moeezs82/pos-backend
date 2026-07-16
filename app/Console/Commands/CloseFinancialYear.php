@@ -50,6 +50,17 @@ class CloseFinancialYear extends Command
         'role_has_permissions',
         'products',
         'product_stocks',
+        'registers',
+        'printer_settings',
+        'branch_subscriptions',
+        'subscription_audits',
+        'invoice_sequences',
+        'personal_access_tokens',
+        'sessions',
+        'password_reset_tokens',
+        'jobs',
+        'job_batches',
+        'failed_jobs',
     ];
 
     /**
@@ -65,6 +76,7 @@ class CloseFinancialYear extends Command
         'sale_returns',
         'sale_return_items',
         'sale_return_refunds',
+        'sale_refunds',
         'purchases',
         'purchase_items',
         'purchase_claims',
@@ -73,6 +85,9 @@ class CloseFinancialYear extends Command
         'receipts',
         'vendor_payments',
         'cash_transactions',
+        'cash_ledger_entries',
+        'register_shifts',
+        'shift_cash_movements',
         'stock_movements',
         'delivery_boy_received',
         'journal_entries',
@@ -83,6 +98,16 @@ class CloseFinancialYear extends Command
     private array $scopedIds = [];
 
     private ?object $branchScope = null;
+
+    /**
+     * Framework bookkeeping/cache tables that are deliberately rebuilt or
+     * allowed to start empty in the new database.
+     */
+    private array $ignoredTables = [
+        'migrations',
+        'cache',
+        'cache_locks',
+    ];
 
     public function handle(): int
     {
@@ -98,6 +123,7 @@ class CloseFinancialYear extends Command
         $this->branchScope = $this->resolveBranchScope();
         $this->prepareScopedIds();
         $targetDatabase = $this->targetDatabasePath($nextYear);
+        $this->assertEverySourceTableHasPolicy();
 
         if ($this->option('dry-run')) {
             return $this->dryRun($closeDate, $sourceDatabase, $targetDatabase);
@@ -117,12 +143,18 @@ class CloseFinancialYear extends Command
         $target->statement('PRAGMA foreign_keys = OFF');
 
         try {
+            $this->assertEverySourceTableIsClassified($target);
             $this->copyMasterTables($target);
             $this->copyOpenBranchTransactionHistory($target);
             $openingRows = $this->createOpeningBalances($target, $closeDate);
             $target->statement('PRAGMA foreign_keys = ON');
+            $this->assertTargetForeignKeysAreValid($target);
         } catch (\Throwable $e) {
             $target->statement('PRAGMA foreign_keys = ON');
+            DB::purge(self::TARGET_CONNECTION);
+            if (file_exists($targetDatabase)) {
+                @unlink($targetDatabase);
+            }
             throw $e;
         }
 
@@ -265,6 +297,7 @@ class CloseFinancialYear extends Command
             }
 
             $query = $this->sourceQueryForTable($table);
+            $expectedCount = (clone $query)->count();
             $sourceColumns = Schema::getColumnListing($table);
             $targetColumns = $target->getSchemaBuilder()->getColumnListing($table);
             $copyColumns = array_values(array_intersect($sourceColumns, $targetColumns));
@@ -298,6 +331,7 @@ class CloseFinancialYear extends Command
             });
 
             $this->line('  '.$table.': '.$count);
+            $this->assertCopiedRowCount($target, $table, $expectedCount);
         }
     }
 
@@ -349,6 +383,7 @@ class CloseFinancialYear extends Command
             }
 
             $query = $this->sourceTransactionQueryForTable($table);
+            $expectedCount = (clone $query)->count();
             $sourceColumns = Schema::getColumnListing($table);
             $targetColumns = $target->getSchemaBuilder()->getColumnListing($table);
             $copyColumns = array_values(array_intersect($sourceColumns, $targetColumns));
@@ -373,6 +408,7 @@ class CloseFinancialYear extends Command
             });
 
             $this->line('  '.$table.': '.$count);
+            $this->assertCopiedRowCount($target, $table, $expectedCount);
         }
     }
 
@@ -390,6 +426,7 @@ class CloseFinancialYear extends Command
             'sale_returns' => $this->whereOwnOrParentOpenBranch($query, 'sale_returns', 'sale_id', 'sales', $branchId),
             'sale_return_items' => $this->whereChildParentOpenBranch($query, 'sale_return_id', 'sale_returns', $branchId),
             'sale_return_refunds' => $this->whereChildParentOpenBranch($query, 'sale_return_id', 'sale_returns', $branchId),
+            'sale_refunds' => $this->whereChildParentOpenBranch($query, 'sale_id', 'sales', $branchId),
             'purchase_items' => $this->whereChildParentOpenBranch($query, 'purchase_id', 'purchases', $branchId),
             'purchase_claims' => $this->whereOwnOrParentOpenBranch($query, 'purchase_claims', 'purchase_id', 'purchases', $branchId),
             'purchase_claim_items' => $this->whereChildParentOpenBranch($query, 'purchase_claim_id', 'purchase_claims', $branchId),
@@ -397,6 +434,7 @@ class CloseFinancialYear extends Command
             'receipts' => $this->whereOwnOrParentOpenBranch($query, 'receipts', 'sale_id', 'sales', $branchId),
             'vendor_payments' => $this->whereOwnOrParentOpenBranch($query, 'vendor_payments', 'purchase_id', 'purchases', $branchId),
             'journal_postings' => $this->whereChildParentOpenBranch($query, 'journal_entry_id', 'journal_entries', $branchId),
+            'shift_cash_movements' => $this->whereChildParentOpenBranch($query, 'register_shift_id', 'register_shifts', $branchId),
             'delivery_boy_received' => $this->whereDeliveryReceivedOpenBranch($query, $branchId),
             default => $this->whereOpenBranch($query, $table, $branchId),
         };
@@ -874,5 +912,91 @@ class CloseFinancialYear extends Command
     private function orderColumn(string $table): string
     {
         return Schema::hasColumn($table, 'id') ? 'id' : (Schema::getColumnListing($table)[0] ?? 'rowid');
+    }
+
+    private function assertEverySourceTableIsClassified(ConnectionInterface $target): void
+    {
+        $sourceTables = collect(Schema::getTableListing())
+            ->map(fn (string $table) => $this->unqualifiedTableName($table))
+            ->filter(fn (string $table) => !str_starts_with($table, 'sqlite_'))
+            ->unique();
+
+        $targetTables = collect($target->getSchemaBuilder()->getTableListing())
+            ->map(fn (string $table) => $this->unqualifiedTableName($table))
+            ->unique();
+
+        $missingFromTarget = $sourceTables
+            ->diff($this->ignoredTables)
+            ->diff($targetTables)
+            ->sort()
+            ->values();
+
+        if ($missingFromTarget->isNotEmpty()) {
+            throw new RuntimeException(
+                'Financial-year close aborted: these source tables do not exist in the migrated target: '
+                .$missingFromTarget->implode(', ')
+            );
+        }
+    }
+
+    private function assertEverySourceTableHasPolicy(): void
+    {
+        $classified = array_unique(array_merge(
+            $this->masterTables,
+            $this->transactionTables,
+            $this->ignoredTables,
+        ));
+
+        $unclassified = collect(Schema::getTableListing())
+            ->map(fn (string $table) => $this->unqualifiedTableName($table))
+            ->filter(fn (string $table) => !str_starts_with($table, 'sqlite_'))
+            ->diff($classified)
+            ->sort()
+            ->values();
+
+        if ($unclassified->isNotEmpty()) {
+            throw new RuntimeException(
+                'Financial-year close aborted: these tables have no rollover policy: '
+                .$unclassified->implode(', ')
+                .'. Classify each table as master/setup, transaction/history, or intentionally ignored.'
+            );
+        }
+    }
+
+    private function assertCopiedRowCount(
+        ConnectionInterface $target,
+        string $table,
+        int $expectedCount
+    ): void {
+        $actualCount = $target->table($table)->count();
+
+        if ($actualCount !== $expectedCount) {
+            throw new RuntimeException(
+                "Financial-year close row-count mismatch for {$table}: expected {$expectedCount}, copied {$actualCount}."
+            );
+        }
+    }
+
+    private function assertTargetForeignKeysAreValid(ConnectionInterface $target): void
+    {
+        $violations = $target->select('PRAGMA foreign_key_check');
+
+        if ($violations !== []) {
+            $preview = collect($violations)
+                ->take(10)
+                ->map(fn ($row) => ($row->table ?? 'unknown').' row '.($row->rowid ?? '?'))
+                ->implode(', ');
+
+            throw new RuntimeException(
+                'Financial-year close produced foreign-key violations: '.$preview
+            );
+        }
+    }
+
+    private function unqualifiedTableName(string $table): string
+    {
+        $parts = explode('.', $table);
+
+        return (string) end($parts);
     }
 }
