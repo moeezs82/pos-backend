@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Account;
 use App\Models\PaymentMethodAccount;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -147,6 +148,49 @@ class PaymentMethodService
         if ($onlyDrawer) $q->where('affects_cash_drawer', true);
 
         return $q->pluck('account_id')->map(fn ($id) => (int) $id)->unique()->values()->all();
+    }
+
+    /**
+     * All monetary (cash/bank/clearing) posting-account IDs relevant to reports
+     * for a branch — or across every branch when $branchId is null. Includes
+     * INACTIVE methods so historical postings are still captured, plus the
+     * legacy Cash(1000)/Bank(1010) accounts as a safety fallback. De-duplicated.
+     *
+     * @param  bool  $onlyDrawer  Restrict to drawer-affecting (physical cash) accounts.
+     * @return int[]
+     */
+    public function monetaryAccountIds(?int $branchId = null, bool $onlyDrawer = false): array
+    {
+        $q = DB::table('payment_method_accounts');
+        if ($branchId) {
+            $q->where('branch_id', $branchId);
+        }
+        if ($onlyDrawer && \Illuminate\Support\Facades\Schema::hasColumn('payment_method_accounts', 'affects_cash_drawer')) {
+            $q->where('affects_cash_drawer', true);
+        }
+        $ids = $q->pluck('account_id')->map(fn ($i) => (int) $i)->all();
+
+        // Legacy fallback so pre-configuration journals still appear.
+        $legacyCodes = $onlyDrawer ? ['1000'] : ['1000', '1010'];
+        $legacy = DB::table('accounts')->whereIn('code', $legacyCodes)
+            ->pluck('id')->map(fn ($i) => (int) $i)->all();
+
+        return array_values(array_unique(array_merge($ids, $legacy)));
+    }
+
+    /**
+     * Same set as monetaryAccountIds() but returned as account CODES, for
+     * reports that filter by accounts.code.
+     *
+     * @return string[]
+     */
+    public function monetaryAccountCodes(?int $branchId = null, bool $onlyDrawer = false): array
+    {
+        $ids = $this->monetaryAccountIds($branchId, $onlyDrawer);
+        if (empty($ids)) return [];
+
+        return DB::table('accounts')->whereIn('id', $ids)
+            ->pluck('code')->map(fn ($c) => (string) $c)->values()->all();
     }
 
     /**

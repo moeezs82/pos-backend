@@ -8,6 +8,7 @@ use App\Models\PaymentMethodAccount;
 use App\Models\PurchaseClaimReceipt;
 use App\Models\SaleReturnRefund;
 use App\Models\Vendor;
+use App\Models\VendorPayment;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\ValidationException;
 
@@ -98,6 +99,52 @@ class CashSyncService
             entryDate: optional($pp->paid_at)->toDateString() ?? now()->toDateString(),
             userId: auth()->id()
         );
+    }
+
+    /**
+     * Record a drawer-affecting vendor payment as an operational cash
+     * transaction linked to the cashier's open shift, so a cash purchase
+     * payment correctly reduces register expected cash.
+     *
+     * GL is NOT posted here (VendorPaymentService already posts the AP
+     * settlement journal) — this only writes the read-model row the register
+     * consumes. Idempotent on (source_type, source_id).
+     */
+    public function recordVendorPaymentTxn(VendorPayment $vp, ?int $registerShiftId = null): ?CashTransaction
+    {
+        $exists = CashTransaction::query()
+            ->where('source_type', VendorPayment::class)
+            ->where('source_id', $vp->id)
+            ->exists();
+        if ($exists) {
+            return null;
+        }
+
+        $branchId = $vp->branch_id ? (int) $vp->branch_id : null;
+        $account  = $this->mapMethodToAccount($vp->method ?: 'cash', $branchId);
+
+        $txn = CashTransaction::create([
+            'txn_date'          => optional($vp->paid_at)->toDateString() ?? now()->toDateString(),
+            'account_id'        => $account->id,
+            'branch_id'         => $branchId,
+            'register_shift_id' => $registerShiftId,
+            'type'              => 'payment',
+            'amount'            => $vp->amount,
+            'method'            => $vp->method ?: 'cash',
+            'reference'         => $vp->reference ?: ('Purchase#' . $vp->purchase_id),
+            'note'              => 'Vendor payment',
+            'status'            => 'approved',
+            'created_by'        => $vp->created_by ?: Auth::id(),
+            'source_type'       => VendorPayment::class,
+            'source_id'         => $vp->id,
+            'counterparty_type' => Vendor::class,
+            'counterparty_id'   => $vp->vendor_id,
+        ]);
+
+        $vp->cash_transaction_id = $txn->id;
+        $vp->save();
+
+        return $txn;
     }
 
     public function resync(CashTransaction $txn, array $fields): CashTransaction

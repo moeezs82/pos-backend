@@ -87,6 +87,21 @@ class VendorPaymentService
             );
         }
 
+        // If this payment used a drawer (physical cash) method and the cashier
+        // has an open shift for this branch, record a shift-linked operational
+        // cash transaction so register expected cash drops accordingly.
+        $pmService = app(PaymentMethodService::class);
+        if ($pmService->affectsCashDrawer($vp->branch_id ? (int) $vp->branch_id : null, $vp->method)) {
+            $shiftId = \App\Models\RegisterShift::query()
+                ->where('cashier_id', auth()->id())
+                ->where('branch_id', $vp->branch_id)
+                ->where('status', 'open')
+                ->value('id');
+            if ($shiftId) {
+                $this->cashSync->recordVendorPaymentTxn($vp, (int) $shiftId);
+            }
+        }
+
         // Save allocations (if provided). Caller may pass allocations or we can create allocations
         // for a single purchase (e.g. the purchase we just created) outside of this method.
         // foreach (($data['allocations'] ?? []) as $al) {

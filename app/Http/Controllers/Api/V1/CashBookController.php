@@ -343,6 +343,59 @@ class CashBookController extends Controller
             ->first();
         $closingOverall = $lastRow ? (float)$lastRow->closing : (float)$opening;
 
+        // ---------- Per-method breakdown (Cash / Bank / KNET / …) ----------
+        // "How much did I receive/pay via each method" for the period, with
+        // opening + in - out = closing per method.
+        $rangeWhen = function ($q) use ($branch_id, $from, $to) {
+            $q->where('status', 'approved')->when($branch_id, fn ($qq) => $qq->where('branch_id', $branch_id));
+            if ($from && $to)      $q->whereBetween('txn_date', [$from, $to]);
+            elseif ($from && !$to) $q->where('txn_date', '>=', $from);
+            elseif (!$from && $to) $q->where('txn_date', '<=', $to);
+            return $q;
+        };
+
+        $methodOpen = [];
+        if ($from) {
+            foreach (DB::table('cash_transactions')
+                ->when($branch_id, fn ($q) => $q->where('branch_id', $branch_id))
+                ->where('status', 'approved')->where('txn_date', '<', $from)
+                ->selectRaw("COALESCE(method,'cash') AS m")
+                ->selectRaw("SUM(CASE WHEN type IN ('receipt','transfer_in') THEN amount ELSE 0 END) AS inn")
+                ->selectRaw("SUM(CASE WHEN type IN ('payment','transfer_out','expense') THEN amount ELSE 0 END) AS outt")
+                ->groupBy('m')->get() as $r) {
+                $methodOpen[$r->m] = (float) $r->inn - (float) $r->outt;
+            }
+        }
+
+        $methodRange = [];
+        foreach ($rangeWhen(DB::table('cash_transactions'))
+            ->selectRaw("COALESCE(method,'cash') AS m")
+            ->selectRaw("SUM(CASE WHEN type IN ('receipt','transfer_in') THEN amount ELSE 0 END) AS inn")
+            ->selectRaw("SUM(CASE WHEN type IN ('payment','transfer_out','expense') THEN amount ELSE 0 END) AS outt")
+            ->groupBy('m')->get() as $r) {
+            $methodRange[$r->m] = ['in' => (float) $r->inn, 'out' => (float) $r->outt];
+        }
+
+        $methodNames = DB::table('payment_method_accounts')
+            ->when($branch_id, fn ($q) => $q->where('branch_id', $branch_id), fn ($q) => $q->whereNull('branch_id'))
+            ->pluck('display_name', 'method');
+
+        $byMethod = [];
+        foreach (array_unique(array_merge(array_keys($methodOpen), array_keys($methodRange))) as $m) {
+            $op  = (float) ($methodOpen[$m] ?? 0);
+            $in  = (float) ($methodRange[$m]['in'] ?? 0);
+            $out = (float) ($methodRange[$m]['out'] ?? 0);
+            $byMethod[] = [
+                'method'  => $m,
+                'name'    => $methodNames[$m] ?? ucwords(str_replace(['_', '-'], ' ', (string) $m)),
+                'opening' => number_format($op, 2, '.', ''),
+                'in'      => number_format($in, 2, '.', ''),
+                'out'     => number_format($out, 2, '.', ''),
+                'closing' => number_format($op + $in - $out, 2, '.', ''),
+            ];
+        }
+        usort($byMethod, fn ($a, $b) => strcmp($a['name'], $b['name']));
+
         return ApiResponse::success([
             'opening_balance' => number_format($opening, 2, '.', ''),
             'totals' => [
@@ -352,6 +405,7 @@ class CashBookController extends Controller
                 'net'         => number_format($totalNet, 2, '.', ''),
                 'closing'     => number_format($closingOverall, 2, '.', ''),
             ],
+            'by_method' => $byMethod,
             'page_totals' => [
                 'payment_in'  => number_format($pageIn, 2, '.', ''),
                 'payment_out' => number_format($pageOut, 2, '.', ''),

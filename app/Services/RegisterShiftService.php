@@ -45,27 +45,40 @@ class RegisterShiftService
 
     public function summary(RegisterShift $shift): array
     {
+        $branchId = $shift->branch_id ? (int) $shift->branch_id : null;
+
+        // Which method codes physically affect the drawer for this branch. Read
+        // from configuration (affects_cash_drawer) — never inferred from the
+        // literal word "cash". Defaults to ['cash'] if config is missing.
+        $pmService   = app(\App\Services\PaymentMethodService::class);
+        $drawerFlags = $pmService->drawerFlagsForBranch($branchId);
+        $drawerCodes = array_keys(array_filter($drawerFlags));
+        if (empty($drawerCodes)) {
+            $drawerCodes = ['cash'];
+        }
+
         $sales = DB::table('sales')->where('register_shift_id', $shift->id)->whereNull('deleted_at');
         $receipts = DB::table('receipts')->where('register_shift_id', $shift->id);
         $refunds = DB::table('sale_return_refunds')->where('register_shift_id', $shift->id);
         $inlineRefunds = DB::table('sale_refunds')->where('register_shift_id', $shift->id);
         $ledger = DB::table('cash_ledger_entries')->where('register_shift_id', $shift->id)->where('status', 'posted')->whereNull('deleted_at');
         $moves = DB::table('shift_cash_movements')->where('register_shift_id', $shift->id);
+        // Only drawer methods change expected physical cash.
         $cashTransactions = DB::table('cash_transactions')->where('register_shift_id', $shift->id)
-            ->where('method', 'cash')->where('status', 'approved')->whereNull('deleted_at')
+            ->whereIn('method', $drawerCodes)->where('status', 'approved')->whereNull('deleted_at')
             ->where(function ($q) {
                 $q->whereNull('source_type')->orWhere('source_type', '!=', ShiftCashMovement::class);
             });
 
         $grossSales = (float) (clone $sales)->where('total', '>', 0)->sum('total');
         $inlineReturns = abs((float) (clone $sales)->where('total', '<', 0)->sum('total'));
-        $cashSales = (float) (clone $receipts)->where('method', 'cash')->whereNotNull('sale_id')->sum('amount');
+        $cashSales = (float) (clone $receipts)->whereIn('method', $drawerCodes)->whereNotNull('sale_id')->sum('amount');
         $methods = (clone $receipts)->select('method', DB::raw('SUM(amount) amount'))->groupBy('method')->pluck('amount', 'method');
-        $customerCashReceipts = (float) (clone $receipts)->where('method', 'cash')->whereNull('sale_id')->sum('amount');
-        $cashRefunds = (float) (clone $refunds)->where('method', 'cash')->sum('amount')
-            + (float) (clone $inlineRefunds)->where('method', 'cash')->sum('amount');
-        $ledgerIn = (float) (clone $ledger)->where('method', 'cash')->where('direction', 'in')->sum('amount');
-        $ledgerOut = (float) (clone $ledger)->where('method', 'cash')->where('direction', 'out')->sum('amount');
+        $customerCashReceipts = (float) (clone $receipts)->whereIn('method', $drawerCodes)->whereNull('sale_id')->sum('amount');
+        $cashRefunds = (float) (clone $refunds)->whereIn('method', $drawerCodes)->sum('amount')
+            + (float) (clone $inlineRefunds)->whereIn('method', $drawerCodes)->sum('amount');
+        $ledgerIn = (float) (clone $ledger)->whereIn('method', $drawerCodes)->where('direction', 'in')->sum('amount');
+        $ledgerOut = (float) (clone $ledger)->whereIn('method', $drawerCodes)->where('direction', 'out')->sum('amount');
         $manualIn = (float) (clone $moves)->where('direction', 'in')->sum('amount');
         $manualOut = (float) (clone $moves)->where('direction', 'out')->sum('amount');
         $cashTxnIn = (float) (clone $cashTransactions)->where('type', 'transfer_in')->sum('amount');
@@ -78,6 +91,61 @@ class RegisterShiftService
             })->sum('amount');
         $expected = round((float) $shift->opening_cash + $cashSales + $customerCashReceipts + $ledgerIn + $manualIn + $cashTxnIn - $cashRefunds - $ledgerOut - $manualOut - $cashTxnOut, 2);
 
+        // ── Dynamic per-method breakdown (in/out) ──────────────────────────
+        // Non-drawer methods (KNET, card, bank, …) appear here for visibility
+        // but do NOT change expected physical cash.
+        $agg = [];
+        $add = function (?string $method, float $in, float $out) use (&$agg) {
+            $m = $method ?: 'cash';
+            $agg[$m] ??= ['in' => 0.0, 'out' => 0.0];
+            $agg[$m]['in'] += $in;
+            $agg[$m]['out'] += $out;
+        };
+        foreach ((clone $receipts)->select('method', DB::raw('SUM(amount) a'))->groupBy('method')->get() as $r) $add($r->method, (float) $r->a, 0);
+        foreach ((clone $refunds)->select('method', DB::raw('SUM(amount) a'))->groupBy('method')->get() as $r) $add($r->method, 0, (float) $r->a);
+        foreach ((clone $inlineRefunds)->select('method', DB::raw('SUM(amount) a'))->groupBy('method')->get() as $r) $add($r->method, 0, (float) $r->a);
+        foreach ((clone $ledger)->select('method', 'direction', DB::raw('SUM(amount) a'))->groupBy('method', 'direction')->get() as $r) {
+            $r->direction === 'in' ? $add($r->method, (float) $r->a, 0) : $add($r->method, 0, (float) $r->a);
+        }
+        $add('cash', $manualIn, $manualOut);
+
+        // Operational cash transactions across ALL methods (vendor payments,
+        // claim receipts, expenses). Exclude shift movements (counted above) and
+        // sale-refund mirrors (already counted via the refunds tables).
+        $ctBreakdown = DB::table('cash_transactions')->where('register_shift_id', $shift->id)
+            ->where('status', 'approved')->whereNull('deleted_at')
+            ->where(function ($q) {
+                $q->whereNull('source_type')->orWhere('source_type', '!=', ShiftCashMovement::class);
+            })
+            ->where(function ($q) {
+                $q->whereNull('source_type')->orWhereNotIn('source_type', [
+                    \App\Models\SaleReturnRefund::class,
+                    \App\Models\SaleRefund::class,
+                ]);
+            });
+        foreach ((clone $ctBreakdown)->select('method', 'type', DB::raw('SUM(amount) a'))->groupBy('method', 'type')->get() as $r) {
+            if (in_array($r->type, ['receipt', 'transfer_in'], true)) {
+                $add($r->method, (float) $r->a, 0);
+            } elseif (in_array($r->type, ['payment', 'expense', 'transfer_out'], true)) {
+                $add($r->method, 0, (float) $r->a);
+            }
+        }
+
+        $names = DB::table('payment_method_accounts')
+            ->when($branchId, fn ($q) => $q->where('branch_id', $branchId), fn ($q) => $q->whereNull('branch_id'))
+            ->pluck('display_name', 'method');
+
+        $methodTotals = [];
+        foreach ($agg as $code => $io) {
+            $methodTotals[] = [
+                'method'              => $code,
+                'name'                => $names[$code] ?? ucwords(str_replace(['_', '-'], ' ', $code)),
+                'in'                  => round($io['in'], 2),
+                'out'                 => round($io['out'], 2),
+                'affects_cash_drawer' => (bool) ($drawerFlags[$code] ?? ($code === 'cash')),
+            ];
+        }
+
         return [
             'gross_sales' => round($grossSales, 2), 'returns' => round($inlineReturns + (float) (clone $refunds)->sum('amount'), 2),
             'cash_sales' => round($cashSales, 2), 'card_sales' => round((float) ($methods['card'] ?? 0), 2),
@@ -86,6 +154,7 @@ class RegisterShiftService
             'other_cash_in' => round($ledgerIn + $manualIn + $cashTxnIn, 2), 'other_cash_out' => round($ledgerOut + $manualOut + $cashTxnOut, 2),
             'expected_cash' => $expected, 'transaction_count' => (clone $sales)->count(),
             'pending_sync_count' => (int) $shift->pending_sync_count,
+            'method_totals' => $methodTotals,
         ];
     }
 

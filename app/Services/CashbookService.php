@@ -48,14 +48,16 @@ class CashbookService
         $perPage     = isset($p['per_page']) ? max(1, min(5000, (int)$p['per_page'])) : 1000;
         $includeBank = array_key_exists('include_bank', $p) ? (bool)$p['include_bank'] : true;
 
-        // ----- Cashbook accounts (from your seeder: 1000 Cash in Hand, 1010 Bank)
+        // ----- Cashbook accounts: dynamic monetary accounts for the branch.
+        // include_bank=false → drawer (physical cash) accounts only; otherwise
+        // all configured payment-method accounts (Cash, Bank, KNET Clearing, …).
         $accountIds = isset($p['account_ids']) ? array_values(array_filter((array)$p['account_ids'])) : [];
         if (empty($accountIds)) {
-            $accQ = DB::table('accounts')->select('id')->whereIn('code', $includeBank ? ['1000','1010'] : ['1000']);
-            $accountIds = $accQ->pluck('id')->map(fn($v) => (int)$v)->all();
+            $accountIds = app(\App\Services\PaymentMethodService::class)
+                ->monetaryAccountIds($branchId, !$includeBank);
         }
         if (empty($accountIds)) {
-            throw new InvalidArgumentException('No cashbook accounts found (expected code 1000/1010). Provide `account_ids[]` or seed accounts.');
+            throw new InvalidArgumentException('No cashbook accounts found. Configure payment methods or provide `account_ids[]`.');
         }
 
         // ----- AccountType id for EXPENSE
@@ -184,9 +186,15 @@ class CashbookService
             ];
         }
 
+        // ===========================
+        // 4) Funds-by-account breakdown (Cash, Bank, KNET Clearing, …)
+        // ===========================
+        $byAccount = $this->breakdownByAccount($accountIds, $branchId, $from, $to, $effDateExpr);
+
         return [
             'opening' => round($opening, 2),
             'rows'    => $rows,
+            'by_account' => $byAccount,
             'totals'  => [
                 'receipts' => round($totalsReceipts, 2),
                 'payments' => round($totalsPayments, 2),
@@ -203,5 +211,73 @@ class CashbookService
             ],
             'pagination' => $pagination,
         ];
+    }
+
+    /**
+     * Per-account (per-fund) breakdown for the period: opening, in, out, closing
+     * for each monetary account (Cash in Hand, Bank, KNET Clearing, …). This is
+     * the "how much cash vs bank vs KNET" view a business owner wants. Computed
+     * from journal postings, so it always ties out to the ledger.
+     */
+    private function breakdownByAccount(array $accountIds, ?int $branchId, $from, $to, string $effDateExpr): array
+    {
+        if (empty($accountIds)) return [];
+
+        // Opening (before the period), per account.
+        $openMap = DB::table('journal_postings as jp')
+            ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
+            ->whereIn('jp.account_id', $accountIds)
+            ->whereRaw("DATE($effDateExpr) < ?", [$from->format('Y-m-d')])
+            ->when($branchId, fn ($q) => $q->where('je.branch_id', $branchId))
+            ->groupBy('jp.account_id')
+            ->selectRaw('jp.account_id as account_id, COALESCE(SUM(jp.debit - jp.credit),0) as opening')
+            ->pluck('opening', 'account_id');
+
+        // In (debits) / Out (credits) within the period, per account.
+        $rangeRows = DB::table('journal_postings as jp')
+            ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
+            ->whereIn('jp.account_id', $accountIds)
+            ->whereRaw("DATE($effDateExpr) >= ?", [$from->format('Y-m-d')])
+            ->whereRaw("DATE($effDateExpr) <= ?", [$to->format('Y-m-d')])
+            ->when($branchId, fn ($q) => $q->where('je.branch_id', $branchId))
+            ->groupBy('jp.account_id')
+            ->selectRaw('jp.account_id as account_id, COALESCE(SUM(jp.debit),0) as inflow, COALESCE(SUM(jp.credit),0) as outflow')
+            ->get()
+            ->keyBy('account_id');
+
+        $accts = DB::table('accounts')->whereIn('id', $accountIds)->get(['id', 'code', 'name'])->keyBy('id');
+
+        // Which payment methods feed each account (for a friendly label).
+        $methodMap = [];
+        $pma = DB::table('payment_method_accounts')
+            ->when($branchId, fn ($q) => $q->where('branch_id', $branchId), fn ($q) => $q->whereNull('branch_id'))
+            ->get(['account_id', 'display_name', 'method']);
+        foreach ($pma as $r) {
+            $methodMap[$r->account_id][] = $r->display_name ?: ucwords(str_replace(['_', '-'], ' ', (string) $r->method));
+        }
+
+        $out = [];
+        foreach ($accountIds as $aid) {
+            $acct    = $accts[$aid] ?? null;
+            $opening = (float) ($openMap[$aid] ?? 0);
+            $inflow  = (float) (optional($rangeRows[$aid] ?? null)->inflow ?? 0);
+            $outflow = (float) (optional($rangeRows[$aid] ?? null)->outflow ?? 0);
+
+            $out[] = [
+                'account_id' => (int) $aid,
+                'code'       => $acct->code ?? null,
+                'name'       => $acct->name ?? ('Account ' . $aid),
+                'methods'    => array_values(array_unique($methodMap[$aid] ?? [])),
+                'opening'    => round($opening, 2),
+                'in'         => round($inflow, 2),
+                'out'        => round($outflow, 2),
+                'closing'    => round($opening + $inflow - $outflow, 2),
+            ];
+        }
+
+        // Stable order by account code.
+        usort($out, fn ($a, $b) => strcmp((string) $a['code'], (string) $b['code']));
+
+        return $out;
     }
 }

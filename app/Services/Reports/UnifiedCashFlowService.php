@@ -47,7 +47,7 @@ class UnifiedCashFlowService
     public function build(array $p): array
     {
         [$from, $to, $branchId] = $this->range($p);
-        $cashAccountIds = $this->cashAccountIds();
+        $cashAccountIds = $this->cashAccountIds($branchId);
 
         $opening = $this->openingBalance($cashAccountIds, $branchId, $from);
         $rows    = $this->cashMovements($cashAccountIds, $branchId, $from, $to)->get();
@@ -102,7 +102,7 @@ class UnifiedCashFlowService
     public function transactions(array $p): array
     {
         [$from, $to, $branchId] = $this->range($p);
-        $cashAccountIds = $this->cashAccountIds();
+        $cashAccountIds = $this->cashAccountIds($branchId);
 
         $perPage = max(1, min(100, (int) ($p['per_page'] ?? 20)));
         $page    = max(1, (int) ($p['page'] ?? 1));
@@ -206,7 +206,7 @@ class UnifiedCashFlowService
     public function dayBookSummary(array $p): array
     {
         [$from, $to, $branchId] = $this->range($p);
-        $cashAccountIds = $this->cashAccountIds();
+        $cashAccountIds = $this->cashAccountIds($branchId);
 
         $page    = max(1, (int) ($p['page'] ?? 1));
         $perPage = max(1, min(200, (int) ($p['per_page'] ?? 30)));
@@ -313,7 +313,7 @@ class UnifiedCashFlowService
     {
         $date = $p['date'];
         $branchId = isset($p['branch_id']) && $p['branch_id'] ? (int) $p['branch_id'] : null;
-        $cashAccountIds = $this->cashAccountIds();
+        $cashAccountIds = $this->cashAccountIds($branchId);
 
         $opening = $this->openingBalance($cashAccountIds, $branchId, $date);
 
@@ -373,9 +373,12 @@ class UnifiedCashFlowService
         return [$from, $to, $branchId];
     }
 
-    private function cashAccountIds(): array
+    private function cashAccountIds(?int $branchId = null): array
     {
-        return DB::table('accounts')->whereIn('code', self::CASH_CODES)->pluck('id')->all();
+        // Dynamic: every configured payment-method account for the branch
+        // (Cash, Bank, KNET Clearing, Card Clearing, Cheques, …) + legacy
+        // 1000/1010 fallback, de-duplicated.
+        return app(\App\Services\PaymentMethodService::class)->monetaryAccountIds($branchId);
     }
 
     private function openingBalance(array $cashAccountIds, ?int $branchId, string $from): float
@@ -395,7 +398,9 @@ class UnifiedCashFlowService
         $contra = DB::table('journal_postings as jp')
             ->join('accounts as a', 'a.id', '=', 'jp.account_id')
             ->join('account_types as at', 'at.id', '=', 'a.account_type_id')
-            ->whereNotIn('a.code', self::CASH_CODES)
+            // The contra (non-cash) legs are everything OUTSIDE the monetary set,
+            // so a transfer between two monetary accounts isn't misclassified.
+            ->whereNotIn('jp.account_id', $cashAccountIds)
             ->groupBy('jp.journal_entry_id')
             ->selectRaw('jp.journal_entry_id')
             ->selectRaw("MAX(CASE WHEN at.code = 'EXPENSE' THEN 1 ELSE 0 END) as has_expense")

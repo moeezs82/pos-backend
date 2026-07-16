@@ -46,10 +46,9 @@ class DayBookService
         };
 
         // ------------------ Identify Cash/Bank accounts ------------------
-        // Option A: by explicit codes (edit to your chart)
-        $cashCodes = ['1000', '1010']; // Cash in Hand, Bank
-        // Option B (recommended): a boolean column accounts.is_cash
-        // ->where('a.is_cash', 1)
+        // Dynamic: every configured payment-method account for the branch
+        // (Cash, Bank, KNET Clearing, …) + legacy 1000/1010 fallback.
+        $cashCodes = app(\App\Services\PaymentMethodService::class)->monetaryAccountCodes($branchId);
 
         // ------------------ Opening CASH balance before $from ------------------
         $openingRow = $applyBranch(
@@ -217,10 +216,8 @@ class DayBookService
         };
 
         // ------------------ Identify Cash/Bank accounts ------------------
-        // Option A: by codes
-        $cashCodes = ['1000', '1010']; // Cash in Hand, Bank
-        // Option B: use a flag column instead (recommended):
-        //   ->where('a.is_cash', 1)
+        // Dynamic monetary accounts for the branch + legacy 1000/1010 fallback.
+        $cashCodes = app(\App\Services\PaymentMethodService::class)->monetaryAccountCodes($branchId);
 
         // Prebuild quoted list for selectRaw IN (...)
         $quotedList = implode(',', array_map(fn($c) => DB::getPdo()->quote($c), $cashCodes));
