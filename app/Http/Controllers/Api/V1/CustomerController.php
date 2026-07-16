@@ -391,7 +391,8 @@ class CustomerController extends Controller
     {
         $data = $request->validate([
             'amount'      => 'required|numeric|min:1',
-            'method'      => ['required', Rule::in(['cash', 'card', 'bank', 'wallet'])],
+            // Validated against the branch by the resolver in CustomerPaymentService.
+            'method'      => ['required', 'string'],
             'reference'   => 'nullable|string',
             'branch_id' => 'nullable|integer',
             'received_by' => 'nullable|integer',

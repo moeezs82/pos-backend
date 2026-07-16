@@ -29,7 +29,8 @@ class CashLedgerEntryRequest extends FormRequest
             'category'       => ['required', Rule::in(CashLedgerCategory::values())],
             'amount'         => ['required', 'numeric', 'gt:0'],
             'txn_date'       => ['nullable', 'date_format:Y-m-d'],
-            'method'         => ['nullable', Rule::in(['cash', 'bank', 'card', 'wallet'])],
+            // Any well-formed code; resolved against the branch by CashLedgerService.
+            'method'         => ['nullable', 'string', 'max:40'],
 
             // Party is optional; if given, type+id must both be present and valid.
             'party_type'     => ['nullable', Rule::in(array_keys(self::PARTY_MAP))],

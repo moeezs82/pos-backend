@@ -358,16 +358,17 @@ class PurchaseController extends Controller
         $data = $request->validate([
             'method' => 'nullable|string',
             'amount' => 'required|numeric|min:0.01',
-            // 'tx_ref' => 'nullable|string',
+            'reference' => 'nullable|string',
+            'note' => 'nullable|string',
             // 'paid_at' => 'nullable|date',
-            // 'meta'   => 'nullable|array',
         ]);
         $branches->assertCanAccessBranch($request, $purchase->branch_id ? (int) $purchase->branch_id : null);
 
         $data['vendor_id'] = $purchase->vendor_id;
         $data['branch_id'] = $purchase->branch_id;
         $data['purchase_id'] = $purchase->id;
-        $data['reference'] = "Payment for purchase $purchase->invoice_no";
+        // Preserve the user's reference (cheque no, bank ref, …). Document
+        // wording lives in the memo only.
         $data['memo'] = "Payment for purchase $purchase->invoice_no";
         // $data['allocations'][] = [
         //     'purchase_id' => $purchase->id,

@@ -64,7 +64,7 @@ class CashLedgerService
         $registerShiftId = $data['register_shift_id'] ?? RegisterShift::query()
             ->where('cashier_id', $userId)->where('branch_id', $branchId)->where('status', 'open')->value('id');
 
-        $cashCode   = $this->cashAccountCodeForMethod($method);
+        $cashCode   = $this->cashAccountCodeForMethod($method, $branchId);
         $cashAcct   = $this->accountByCode($cashCode);
         $contraCode = $category === CashLedgerCategory::OTHER_EXPENSE && !empty($data['expense_account_code'])
             ? (string) $data['expense_account_code']
@@ -263,11 +263,18 @@ class CashLedgerService
         return [$type, $id];
     }
 
-    private function cashAccountCodeForMethod(string $method): string
+    private function cashAccountCodeForMethod(string $method, ?int $branchId = null): string
     {
-        return self::METHOD_TO_CODE[$method] ?? throw ValidationException::withMessages([
-            'method' => ["Unsupported payment method [{$method}]."],
-        ]);
+        // Prefer the branch's configured payment-method account (Cash, Bank,
+        // KNET Clearing, …). Fall back to the legacy fixed map so historical
+        // callers without configuration keep working.
+        try {
+            return app(PaymentMethodService::class)->accountFor($branchId, $method)->code;
+        } catch (\Throwable $e) {
+            return self::METHOD_TO_CODE[$method] ?? throw ValidationException::withMessages([
+                'method' => ["Unsupported payment method [{$method}]."],
+            ]);
+        }
     }
 
     private function accountByCode(string $code): Account

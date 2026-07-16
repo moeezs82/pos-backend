@@ -384,7 +384,8 @@ class VendorController extends Controller
         $data = $request->validate([
             'branch_id'  => 'nullable|exists:branches,id',
             'paid_at'    => 'nullable|date',
-            'method'     => 'required|string|in:cash,bank,card,wallet',
+            // Validated against the branch by the resolver in VendorPaymentService.
+            'method'     => 'required|string',
             'amount'     => 'required|numeric|min:0.01',
             'reference'  => 'nullable|string',
             'note'       => 'nullable|string',

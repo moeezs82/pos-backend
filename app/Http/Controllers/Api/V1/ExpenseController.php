@@ -28,7 +28,8 @@ class ExpenseController extends Controller
 
             // payment resolution
             'payment_account_id'  => 'nullable|integer|exists:accounts,id',
-            'method'              => 'nullable|string|in:cash,bank,card,wallet',
+            // Any well-formed code; resolved against the branch below.
+            'method'              => 'nullable|string',
 
             // lines (JSON string or array)
             'lines'               => 'required',
@@ -61,8 +62,20 @@ class ExpenseController extends Controller
         $single    = (bool)($data['single_entry'] ?? true);
         $status    = $data['status'] ?? 'approved'; // if you have a status column on journal_entries
 
+        // Resolve the account the expense is PAID FROM (credit side). An explicit
+        // payment_account_id wins; otherwise resolve the payment method against
+        // the branch (Cash→Cash in Hand, Bank→Bank, KNET→KNET Clearing, …).
+        // Falls back to Cash in Hand (1000) for backward compatibility.
+        $creditAccountCode = '1000';
+        if (!empty($data['payment_account_id'])) {
+            $creditAccountCode = Account::whereKey($data['payment_account_id'])->value('code') ?? '1000';
+        } elseif (!empty($data['method'])) {
+            $creditAccountCode = app(\App\Services\PaymentMethodService::class)
+                ->accountFor($branchId, $data['method'])->code;
+        }
+
         try {
-            $result = DB::transaction(function () use ($acct, $branchId, $entryDate, $status, $data, $lines, $single) {
+            $result = DB::transaction(function () use ($acct, $branchId, $entryDate, $status, $data, $lines, $single, $creditAccountCode) {
                 $userId = auth()->id();
                 $memo   = $data['reference'] ?? "Expense Entry";
                 // Attach note to memo if provided
@@ -87,9 +100,9 @@ class ExpenseController extends Controller
                             'credit'     => 0,
                         ];
                     }
-                    // Credit payment (cash/bank)
+                    // Credit payment account (resolved from method / account).
                     $postings[] = [
-                        'account_code' => 1000,
+                        'account_code' => $creditAccountCode,
                         'debit'      => 0,
                         'credit'     => round($total, 2),
                     ];
@@ -132,7 +145,7 @@ class ExpenseController extends Controller
                                 'credit'     => 0,
                             ],
                             [
-                                'account_code' => 1000,
+                                'account_code' => $creditAccountCode,
                                 'debit'      => 0,
                                 'credit'     => $amt,
                             ],

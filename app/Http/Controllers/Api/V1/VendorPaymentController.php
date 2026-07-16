@@ -20,7 +20,7 @@ class VendorPaymentController extends Controller
             'vendor_id'  => 'required|exists:vendors,id',
             'branch_id'  => 'required|exists:branches,id',
             'paid_at'    => 'nullable|date',
-            'method'     => 'required|string|in:cash,bank,card,wallet',
+            'method'     => 'required|string',
             'amount'     => 'required|numeric|min:0.01',
             'reference'  => 'nullable|string',
             'note'       => 'nullable|string',

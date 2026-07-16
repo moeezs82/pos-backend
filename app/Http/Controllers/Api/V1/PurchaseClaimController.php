@@ -477,15 +477,23 @@ class PurchaseClaimController extends Controller
      */
     protected function postReceiptAccounting(\App\Models\PurchaseClaim $claim, float $amount, string $method, \App\Services\AccountingService $accounting, \App\Services\CashSyncService $cashSync, ?\Illuminate\Http\Request $request = null, bool $creditAp = false): void
     {
-        $cashAccount = $cashSync->mapMethodToAccount($method, $claim->branch_id);
         $apAccount = config('accounts.ap_account', '2000'); //TODO
         $returnsAccount = config('accounts.purchase_returns_account', '4000');
+
+        // Debit side: a cash/bank/KNET… receipt lands in the method's asset
+        // account; a "credit note" settlement instead reduces Accounts Payable
+        // (no cash movement) — so it must not go through the payment resolver.
+        if (strtolower($method) === 'credit_note') {
+            $debitAccountCode = $apAccount;
+        } else {
+            $debitAccountCode = $cashSync->mapMethodToAccount($method, $claim->branch_id)->code;
+        }
 
         $creditAccount = $creditAp ? $apAccount : $returnsAccount;
 
         $glLines = [
-            ['account_code' => $cashAccount->code, 'debit' => round($amount, 2), 'credit' => 0],
-            ['account_code' => $creditAccount,      'debit' => 0,                  'credit' => round($amount, 2)],
+            ['account_code' => $debitAccountCode, 'debit' => round($amount, 2), 'credit' => 0],
+            ['account_code' => $creditAccount,    'debit' => 0,                  'credit' => round($amount, 2)],
         ];
 
         $accounting->post(

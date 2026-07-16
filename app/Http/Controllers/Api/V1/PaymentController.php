@@ -20,14 +20,17 @@ class PaymentController extends Controller
 
         $data = $request->validate([
             'amount'      => 'required|numeric|min:1',
-            'method'      => ['required', Rule::in(['cash', 'card', 'bank', 'wallet'])],
+            // Method validated against the branch by the resolver in
+            // CustomerPaymentService (exists + active + asset account).
+            'method'      => 'required|string',
             'reference'   => 'nullable|string',
             'received_by' => 'nullable|integer',
             'received_on' => 'nullable|date'
         ]);
         $data['customer_id'] = $sale->customer_id;
         $data['branch_id'] = $sale->branch_id;
-        $data['reference'] = "Payment received for Sale $sale->invoice_no";
+        // Preserve the user's reference (KNET id, cheque no, …). Document
+        // wording lives in the memo only.
         $data['memo'] = "Payment received for Sale $sale->invoice_no";
         $data['allocations'][] = [
             'sale_id' => $sale->id,
