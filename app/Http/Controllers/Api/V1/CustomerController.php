@@ -118,8 +118,11 @@ class CustomerController extends Controller
                 $jp->where('je.branch_id', $branchId);
             }
 
-            // Optional: restrict to AR accounts if needed
-            // $jp->whereIn('jp.account_id', [1200,1201]);
+            // Commercial balance = Accounts Receivable control account (1200)
+            // ONLY. A loan/Qameti/expense posting tagged with this customer must
+            // never inflate their trade receivable.
+            $arAccountIds = DB::table('accounts')->where('code', '1200')->pluck('id')->all();
+            $jp->whereIn('jp.account_id', $arAccountIds ?: [0]);
 
             $balancesById = $jp->groupBy('jp.party_id')
                 ->get()
@@ -186,27 +189,28 @@ class CustomerController extends Controller
             $branches->assertCanAccessBranch($request, (int) $customer->branch_id);
         }
 
-        $branchId   = $branches->effectiveBranchId($request);
-        $partyTypes = ['customer', \App\Models\Customer::class];
+        $branchId = $branches->effectiveBranchId($request);
 
-        $ar = DB::table('journal_postings as jp')
-            ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
-            ->selectRaw("
-            SUM(CASE WHEN jp.debit  > 0 THEN jp.debit  ELSE 0 END) AS total_sales,
-            SUM(CASE WHEN jp.credit > 0 THEN jp.credit ELSE 0 END) AS total_receipts,
-            SUM(jp.debit - jp.credit) AS balance
-        ")
-            ->whereIn('jp.party_type', $partyTypes)
-            ->where('jp.party_id', $customer->id)
-            ->when($branchId, fn($q) => $q->where('je.branch_id', $branchId))
-            ->first();
+        // Trade summary is Accounts-Receivable-ONLY. Loans (1300), Qameti (1310)
+        // and expenses tagged to this customer must never inflate their trade
+        // balance. Both the trade summary and the separate loan summary come
+        // from the single authoritative PartyBalanceService.
+        $svc   = new \App\Services\PartyBalanceService();
+        $trade = $svc->customerTrade($customer->id, $branchId);
+        $loan  = $svc->loanSummary('customer', $customer->id, $branchId);
 
         $res = (new CustomerResource($customer))->toArray($request);
 
-        // Attach just the simple totals
-        $res['total_sales']    = (float)($ar->total_sales ?? 0);
-        $res['total_receipts'] = (float)($ar->total_receipts ?? 0);
-        $res['balance']        = (float)($ar->balance ?? 0);
+        // Explicit, unambiguous fields.
+        $res['trade_debit']   = $trade['trade_debit'];
+        $res['trade_credit']  = $trade['trade_credit'];
+        $res['trade_balance'] = $trade['trade_balance'];
+        $res['loan']          = $loan;
+
+        // Legacy aliases kept for frontend compatibility — now AR-only values.
+        $res['total_sales']    = $trade['trade_debit'];
+        $res['total_receipts'] = $trade['trade_credit'];
+        $res['balance']        = $trade['trade_balance'];
 
         return ApiResponse::success($res, 'Customer fetched successfully');
     }
@@ -296,11 +300,16 @@ class CustomerController extends Controller
         // We support both 'customer' and FQCN saved in party_type
         $partyTypes = ['customer', \App\Models\Customer::class];
 
+        // Receipts are AR-only: a loan recovery (1300 credit) tagged to this
+        // customer must not appear as a trade receipt.
+        $arAccountIds = DB::table('accounts')->where('code', '1200')->pluck('id')->all() ?: [0];
+
         // ---------- Count (credits to AR for this customer) ----------
         $countQ = DB::table('journal_postings as jp')
             ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
             ->whereIn('jp.party_type', $partyTypes)
             ->where('jp.party_id', $customer->id)
+            ->whereIn('jp.account_id', $arAccountIds)
             ->where('jp.credit', '>', 0);
 
         if ($branchId) {
@@ -328,6 +337,7 @@ class CustomerController extends Controller
             ])
             ->whereIn('jp.party_type', $partyTypes)
             ->where('jp.party_id', $customer->id)
+            ->whereIn('jp.account_id', $arAccountIds)
             ->where('jp.credit', '>', 0)
             ->when($branchId, fn($q) => $q->where('je.branch_id', $branchId))
             ->orderByDesc(DB::raw('COALESCE(jp.created_at, je.entry_date, je.created_at)'))
@@ -385,6 +395,37 @@ class CustomerController extends Controller
 
         $label = ucfirst($data['party_type']) . ' ledger fetched successfully';
         return ApiResponse::success($data, $label);
+    }
+
+    /**
+     * Separate Loan Ledger for this customer as a borrower.
+     * Restricted internally to Loans Receivable (1300); never touches AR.
+     */
+    public function loanLedger(Request $request, Customer $customer, BranchContextService $branches)
+    {
+        if ($customer->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $customer->branch_id);
+        }
+
+        $data = $request->validate([
+            'from'     => 'nullable|date',
+            'to'       => 'nullable|date',
+            'page'     => 'nullable|integer|min:1',
+            'per_page' => 'nullable|integer|min:1|max:100',
+        ]);
+
+        $svc  = new \App\Services\PartyBalanceService();
+        $out  = $svc->loanLedger([
+            'party_type' => 'customer',
+            'party_id'   => $customer->id,
+            'branch_id'  => $branches->effectiveBranchId($request),
+            'from'       => $data['from'] ?? null,
+            'to'         => $data['to'] ?? null,
+            'page'       => $data['page'] ?? 1,
+            'per_page'   => $data['per_page'] ?? 15,
+        ]);
+
+        return ApiResponse::success($out, 'Customer loan ledger fetched successfully');
     }
 
     public function storeReceipt(Request $request, Customer $customer, CustomerPaymentService $cps, BranchContextService $branches)

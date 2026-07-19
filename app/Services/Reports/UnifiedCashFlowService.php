@@ -5,6 +5,7 @@ namespace App\Services\Reports;
 use App\Enums\CashLedgerCategory;
 use DateTimeImmutable;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Single, cohesive cash-flow view across EVERY source of cash movement.
@@ -77,8 +78,68 @@ class UnifiedCashFlowService
                 'outgoing'     => $outgoing + ['total' => $totalOut],
                 'net_movement' => round($totalIn - $totalOut, 2),
                 'closing'      => round($opening + $totalIn - $totalOut, 2),
+                // Per-fund breakdown: how much cash vs bank vs KNET vs … with
+                // opening + in - out = closing for each. Ties out to the ledger.
+                'by_account'   => $this->breakdownByAccount($cashAccountIds, $branchId, $from, $to),
             ],
         ];
+    }
+
+    /**
+     * Opening / in / out / closing for each monetary account over the period.
+     */
+    private function breakdownByAccount(array $accountIds, ?int $branchId, string $from, string $to): array
+    {
+        if (empty($accountIds)) return [];
+        $eff = self::EFF_DATE;
+
+        $openMap = DB::table('journal_postings as jp')
+            ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
+            ->whereIn('jp.account_id', $accountIds)
+            ->when($branchId, fn ($q) => $q->where('je.branch_id', $branchId))
+            ->whereRaw("DATE($eff) < ?", [$from])
+            ->groupBy('jp.account_id')
+            ->selectRaw('jp.account_id as account_id, COALESCE(SUM(jp.debit - jp.credit),0) as opening')
+            ->pluck('opening', 'account_id');
+
+        $rangeRows = DB::table('journal_postings as jp')
+            ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
+            ->whereIn('jp.account_id', $accountIds)
+            ->when($branchId, fn ($q) => $q->where('je.branch_id', $branchId))
+            ->whereRaw("DATE($eff) >= ?", [$from])
+            ->whereRaw("DATE($eff) <= ?", [$to])
+            ->groupBy('jp.account_id')
+            ->selectRaw('jp.account_id as account_id, COALESCE(SUM(jp.debit),0) as inflow, COALESCE(SUM(jp.credit),0) as outflow')
+            ->get()->keyBy('account_id');
+
+        $accts = DB::table('accounts')->whereIn('id', $accountIds)->get(['id', 'code', 'name'])->keyBy('id');
+
+        $methodMap = [];
+        foreach (DB::table('payment_method_accounts')
+                     ->when($branchId, fn ($q) => $q->where('branch_id', $branchId), fn ($q) => $q->whereNull('branch_id'))
+                     ->get(['account_id', 'display_name', 'method']) as $r) {
+            $methodMap[$r->account_id][] = $r->display_name ?: ucwords(str_replace(['_', '-'], ' ', (string) $r->method));
+        }
+
+        $out = [];
+        foreach ($accountIds as $aid) {
+            $acct = $accts[$aid] ?? null;
+            $op   = (float) ($openMap[$aid] ?? 0);
+            $in   = (float) (optional($rangeRows[$aid] ?? null)->inflow ?? 0);
+            $ot   = (float) (optional($rangeRows[$aid] ?? null)->outflow ?? 0);
+            $out[] = [
+                'account_id' => (int) $aid,
+                'code'       => $acct->code ?? null,
+                'name'       => $acct->name ?? ('Account ' . $aid),
+                'methods'    => array_values(array_unique($methodMap[$aid] ?? [])),
+                'opening'    => round($op, 2),
+                'in'         => round($in, 2),
+                'out'        => round($ot, 2),
+                'closing'    => round($op + $in - $ot, 2),
+            ];
+        }
+        usort($out, fn ($a, $b) => strcmp((string) $a['code'], (string) $b['code']));
+        return $out;
     }
 
     // =================================================================
@@ -122,6 +183,16 @@ class UnifiedCashFlowService
 
         if (!empty($p['category'])) $base->where('cle.category', $p['category']);
 
+        // Filter by payment method → its posting account(s) for the branch.
+        if (!empty($p['method'])) {
+            $methodAccountIds = DB::table('payment_method_accounts')
+                ->where('method', strtolower(trim($p['method'])))
+                ->when($branchId, fn ($q) => $q->where('branch_id', $branchId), fn ($q) => $q->whereNull('branch_id'))
+                ->pluck('account_id')->map(fn ($i) => (int) $i)->all();
+            // Empty set => no rows match (method not configured here).
+            $base->whereIn('jp.account_id', $methodAccountIds ?: [0]);
+        }
+
         if (!empty($p['search'])) {
             $s = '%' . $p['search'] . '%';
             $base->where(function ($q) use ($s) {
@@ -144,7 +215,40 @@ class UnifiedCashFlowService
         $partyLeg = $this->partyLegFor($jeIds);          // je_id => [type,id]
         $names    = $this->resolveNames($rows, $partyLeg); // "Type#id" => name
 
-        $items = $rows->map(function ($r) use ($partyLeg, $names) {
+        // account_id => friendly method label(s) that feed it.
+        $methodByAccount = DB::table('payment_method_accounts')
+            ->when($branchId, fn ($q) => $q->where('branch_id', $branchId), fn ($q) => $q->whereNull('branch_id'))
+            ->get(['account_id', 'display_name'])
+            ->groupBy('account_id')
+            ->map(fn ($g) => $g->pluck('display_name')->filter()->unique()->values()->all())
+            ->all();
+
+        // Resolve the user-entered payment reference (KNET id, cheque no, …)
+        // from each row's source document (Receipt, VendorPayment, …). Batched
+        // per source type to avoid N+1.
+        $refByType = [];
+        foreach ($rows as $r) {
+            if ($r->reference_type && $r->reference_id) {
+                $refByType[$r->reference_type][] = (int) $r->reference_id;
+            }
+        }
+        $refMap = [];
+        foreach ($refByType as $type => $ids) {
+            if (!class_exists($type)) continue;
+            try {
+                $table = (new $type)->getTable();
+            } catch (\Throwable $e) {
+                continue;
+            }
+            if (!Schema::hasColumn($table, 'reference')) continue;
+            foreach (DB::table($table)->whereIn('id', array_values(array_unique($ids)))->get(['id', 'reference']) as $row) {
+                if (!empty($row->reference)) {
+                    $refMap[$type . '#' . $row->id] = $row->reference;
+                }
+            }
+        }
+
+        $items = $rows->map(function ($r) use ($partyLeg, $names, $methodByAccount, $refMap) {
             $isIn   = ((float) $r->debit) > 0;
             $amount = round($isIn ? (float) $r->debit : (float) $r->credit, 2);
             [$bucket, $label] = $this->classify($r, $isIn);
@@ -169,8 +273,20 @@ class UnifiedCashFlowService
                 'label'          => $label,
                 'source'         => $cleId ? 'module' : 'journal',
                 'category'       => $r->cle_category,           // null unless module row
+                // The fund this movement went through (Cash in Hand, Bank, KNET
+                // Clearing, …) plus a friendly method label.
+                'account'        => [
+                    'id'   => $r->cash_account_id ? (int) $r->cash_account_id : null,
+                    'code' => $r->cash_account_code,
+                    'name' => $r->cash_account_name,
+                ],
+                'method'         => ($methodByAccount[$r->cash_account_id][0] ?? $r->cash_account_name),
                 'party'          => $party ?: 'Unlinked',
                 'reference_name' => $r->cle_reference_name,
+                // User-entered payment reference (KNET id, cheque no, bank ref).
+                'reference'      => ($r->reference_type && $r->reference_id
+                    ? ($refMap[$r->reference_type . '#' . $r->reference_id] ?? null)
+                    : null) ?: $r->cle_reference_name,
                 'memo'           => $r->memo,
                 'journal_entry_id' => (int) $r->journal_entry_id,
                 'cash_ledger_entry_id' => $cleId,
@@ -340,6 +456,7 @@ class UnifiedCashFlowService
             'branch_id' => $branchId,
             'direction' => $p['direction'] ?? 'all',
             'kind'      => $p['kind'] ?? 'all',
+            'method'    => $p['method'] ?? null,
             'search'    => $p['search'] ?? null,
             'page'      => $p['page'] ?? 1,
             'per_page'  => $p['per_page'] ?? 50,
@@ -411,13 +528,15 @@ class UnifiedCashFlowService
         return DB::table('journal_postings as jp')
             ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
             ->leftJoin('cash_ledger_entries as cle', 'cle.journal_entry_id', '=', 'je.id')
+            ->leftJoin('accounts as ca', 'ca.id', '=', 'jp.account_id')
             ->leftJoinSub($contra, 'c', 'c.journal_entry_id', '=', 'je.id')
             ->whereIn('jp.account_id', $cashAccountIds)
             ->when($branchId, fn ($q) => $q->where('je.branch_id', $branchId))
             ->whereRaw('DATE(' . self::EFF_DATE . ') >= ?', [$from])
             ->whereRaw('DATE(' . self::EFF_DATE . ') <= ?', [$to])
             ->selectRaw(self::EFF_DATE . ' as eff_date')
-            ->selectRaw('jp.id, jp.journal_entry_id, jp.debit, jp.credit, je.memo, je.reference_type')
+            ->selectRaw('jp.id, jp.journal_entry_id, jp.debit, jp.credit, je.memo, je.reference_type, je.reference_id')
+            ->selectRaw('jp.account_id as cash_account_id, ca.code as cash_account_code, ca.name as cash_account_name')
             ->selectRaw('cle.id as cle_id, cle.category as cle_category, cle.reference_name as cle_reference_name')
             ->selectRaw('cle.status as cle_status, cle.party_type as cle_party_type, cle.party_id as cle_party_id')
             ->selectRaw('c.has_expense, c.has_income, c.has_ar, c.has_ap');

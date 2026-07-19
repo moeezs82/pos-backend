@@ -9,6 +9,7 @@ use App\Models\CashLedgerEntry;
 use App\Services\BranchContextService;
 use App\Services\CashLedgerService;
 use App\Services\Reports\UnifiedCashFlowService;
+use App\Services\Reports\SubledgerService;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 
@@ -88,12 +89,63 @@ class CashLedgerController extends Controller
             'direction'  => $request->input('direction'),    // in|out|all
             'kind'       => $request->input('kind'),         // all|module|received|sent|expense
             'category'   => $request->input('category'),     // module category filter
+            'method'     => $request->input('method'),       // payment method filter
             'search'     => $request->input('search'),
             'page'       => (int) $request->input('page', 1),
             'per_page'   => (int) $request->input('per_page', 20),
         ]);
 
         return ApiResponse::success($data);
+    }
+
+    /** GET /cash-ledger/subledgers/loans */
+    public function loansSubledger(Request $request, SubledgerService $subledger)
+    {
+        $request->validate([
+            'from' => 'nullable|date_format:Y-m-d',
+            'to'   => 'nullable|date_format:Y-m-d',
+            'search' => 'nullable|string|max:100',
+        ]);
+        return ApiResponse::success($subledger->loans([
+            'branch_id' => $this->branches->effectiveBranchId($request),
+            'from' => $request->input('from'),
+            'to' => $request->input('to'),
+            'search' => $request->input('search'),
+        ]));
+    }
+
+    /** GET /cash-ledger/subledgers/qameti */
+    public function qametiSubledger(Request $request, SubledgerService $subledger)
+    {
+        $request->validate([
+            'from' => 'nullable|date_format:Y-m-d',
+            'to'   => 'nullable|date_format:Y-m-d',
+            'search' => 'nullable|string|max:100',
+        ]);
+        return ApiResponse::success($subledger->qameti([
+            'branch_id' => $this->branches->effectiveBranchId($request),
+            'from' => $request->input('from'),
+            'to' => $request->input('to'),
+            'search' => $request->input('search'),
+        ]));
+    }
+
+    /** GET /cash-ledger/subledgers/expenses */
+    public function expensesSubledger(Request $request, SubledgerService $subledger)
+    {
+        $request->validate([
+            'from' => 'nullable|date_format:Y-m-d',
+            'to'   => 'nullable|date_format:Y-m-d',
+            'search' => 'nullable|string|max:100',
+            'per_page' => 'nullable|integer|min:1|max:500',
+        ]);
+        return ApiResponse::success($subledger->expenses([
+            'branch_id' => $this->branches->effectiveBranchId($request),
+            'from' => $request->input('from'),
+            'to' => $request->input('to'),
+            'search' => $request->input('search'),
+            'per_page' => (int) $request->input('per_page', 100),
+        ]));
     }
 
     /** GET /cash-ledger/cash-flow  (unified summary) */
@@ -142,6 +194,7 @@ class CashLedgerController extends Controller
             'date'      => 'required|date_format:Y-m-d',
             'direction' => 'nullable|in:in,out,all',
             'kind'      => 'nullable|in:all,module,received,sent,expense',
+            'method'    => 'nullable|string',
             'search'    => 'nullable|string',
             'page'      => 'nullable|integer|min:1',
             'per_page'  => 'nullable|integer|min:1|max:200',
@@ -154,6 +207,7 @@ class CashLedgerController extends Controller
             'branch_id' => $branchId,
             'direction' => $request->input('direction', 'all'),
             'kind'      => $request->input('kind', 'all'),
+            'method'    => $request->input('method'),
             'search'    => $request->input('search'),
             'page'      => (int) $request->input('page', 1),
             'per_page'  => (int) $request->input('per_page', 50),

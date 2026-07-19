@@ -133,33 +133,22 @@ class ProductController extends Controller
 
             $product = Product::create($data);
 
-            $qty = (int) ($request->stock ?? 0);
+            // Opening stock (decimal-safe) routed through the shared domain
+            // service so manual create and CSV/XLSX import produce identical
+            // stock movements and DR 1400 / CR 3100 postings.
+            $qty = round((float) ($request->stock ?? 0), 3);
             if ($qty > 0) {
-                $unitCost = (float) ($data['cost_price'] ?? 0);
-                $asOf = now()->toDateString();
-
-                app(\App\Services\InventoryValuationWriteService::class)->receivePurchase(
-                    productId: $product->id,
-                    branchId: $branchId,
-                    receiveQty: $qty,
-                    unitPrice: $unitCost,
-                    ref: 'OPENING'
+                app(\App\Services\StockPostingService::class)->initializeOpeningStock(
+                    $product->id,
+                    $branchId,
+                    $qty,
+                    (float) ($data['cost_price'] ?? 0),
+                    [
+                        'reference' => 'OPENING',
+                        'memo' => "Opening stock for {$product->name} (#{$product->id})",
+                        'user_id' => auth()->id(),
+                    ],
                 );
-
-                $value = round($qty * $unitCost, 2);
-                if ($value > 0) {
-                    app(\App\Services\AccountingService::class)->post(
-                        branchId: $branchId,
-                        memo: "Opening stock for {$product->name} (#{$product->id})",
-                        reference: $product,
-                        lines: [
-                            ['account_code' => '1400', 'debit' => $value, 'credit' => 0],
-                            ['account_code' => '3100', 'debit' => 0, 'credit' => $value],
-                        ],
-                        entryDate: $asOf,
-                        userId: auth()->id()
-                    );
-                }
             } else {
                 ProductStock::firstOrCreate(
                     ['product_id' => $product->id, 'branch_id' => $branchId],

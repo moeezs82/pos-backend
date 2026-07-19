@@ -22,6 +22,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'role_or_permission' => RoleOrPermissionMiddleware::class,
             'branch.context' => ResolveBranchContext::class,
             'branch.subscription' => \App\Http\Middleware\CheckBranchSubscription::class,
+            'master.admin' => \App\Http\Middleware\EnsureMasterAdmin::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

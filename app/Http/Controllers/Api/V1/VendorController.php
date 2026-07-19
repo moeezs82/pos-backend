@@ -112,8 +112,10 @@ class VendorController extends Controller
                 $jp->where('je.branch_id', $branchId);
             }
 
-            // Optional: restrict to AP control accounts only, if you want
-            // $jp->whereIn('jp.account_id', [2100, 2110]);
+            // Commercial balance = Accounts Payable control account (2000) ONLY.
+            // Loan/Qameti/expense party tags must never inflate trade payable.
+            $apAccountIds = DB::table('accounts')->where('code', '2000')->pluck('id')->all();
+            $jp->whereIn('jp.account_id', $apAccountIds ?: [0]);
 
             $balancesById = $jp->groupBy('jp.party_id')
                 ->get()
@@ -178,30 +180,27 @@ class VendorController extends Controller
             $branches->assertCanAccessBranch($request, (int) $vendor->branch_id);
         }
 
-        $branchId   = $branches->effectiveBranchId($request);
-        $partyTypes = ['vendor', Vendor::class];
+        $branchId = $branches->effectiveBranchId($request);
 
-        // For Vendors (AP):
-        // - Purchases typically CREDIT the vendor (increase AP)
-        // - Payments/returns typically DEBIT the vendor (decrease AP)
-        $ap = DB::table('journal_postings as jp')
-            ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
-            ->selectRaw("
-            SUM(CASE WHEN jp.credit > 0 THEN jp.credit ELSE 0 END) AS total_purchases,
-            SUM(CASE WHEN jp.debit  > 0 THEN jp.debit  ELSE 0 END) AS total_payments,
-            SUM(jp.credit - jp.debit) AS balance
-        ")
-            ->whereIn('jp.party_type', $partyTypes)
-            ->where('jp.party_id', $vendor->id)
-            ->when($branchId, fn($q) => $q->where('je.branch_id', $branchId))
-            ->first();
+        // Trade summary is Accounts-Payable-ONLY. Loans (1300) and other party
+        // tags must never inflate the vendor's payable balance. Trade + loan
+        // summaries both come from the single authoritative PartyBalanceService.
+        $svc   = new \App\Services\PartyBalanceService();
+        $trade = $svc->vendorTrade($vendor->id, $branchId);
+        $loan  = $svc->loanSummary('vendor', $vendor->id, $branchId);
 
         $res = (new VendorResource($vendor))->toArray($request);
 
-        // Attach simple totals (floats for consistency)
-        $res['total_purchases'] = (float) ($ap->total_purchases ?? 0);
-        $res['total_payments']  = (float) ($ap->total_payments  ?? 0);
-        $res['balance']         = (float) ($ap->balance         ?? 0); // >0 = payable
+        // Explicit, unambiguous fields.
+        $res['trade_credit']  = $trade['trade_credit'];  // purchases
+        $res['trade_debit']   = $trade['trade_debit'];   // payments
+        $res['trade_balance'] = $trade['trade_balance']; // >0 = payable
+        $res['loan']          = $loan;
+
+        // Legacy aliases kept for frontend compatibility — now AP-only values.
+        $res['total_purchases'] = $trade['trade_credit'];
+        $res['total_payments']  = $trade['trade_debit'];
+        $res['balance']         = $trade['trade_balance'];
 
         return ApiResponse::success($res, 'Vendor fetched successfully');
     }
@@ -300,11 +299,16 @@ class VendorController extends Controller
             Vendor::class
         ];
 
+        // Payments are AP-only: a loan given (1300 debit) tagged to this vendor
+        // must not appear as a trade payment.
+        $apAccountIds = DB::table('accounts')->where('code', '2000')->pluck('id')->all() ?: [0];
+
         // ---------- Count (debits to AP for this vendor) ----------
         $countQ = DB::table('journal_postings as jp')
             ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
             ->whereIn('jp.party_type', $partyTypes)
             ->where('jp.party_id', $vendor->id)
+            ->whereIn('jp.account_id', $apAccountIds)
             ->where('jp.debit', '>', 0)
             ->when($branchId, fn($q) => $q->where('je.branch_id', $branchId));
 
@@ -323,6 +327,7 @@ class VendorController extends Controller
             ])
             ->whereIn('jp.party_type', $partyTypes)
             ->where('jp.party_id', $vendor->id)
+            ->whereIn('jp.account_id', $apAccountIds)
             ->where('jp.debit', '>', 0)
             ->when($branchId, fn($q) => $q->where('je.branch_id', $branchId))
             ->orderByDesc(DB::raw('COALESCE(je.entry_date, je.created_at)'))
@@ -377,6 +382,37 @@ class VendorController extends Controller
 
         $label = ucfirst($data['party_type']) . ' ledger fetched successfully';
         return ApiResponse::success($data, $label);
+    }
+
+    /**
+     * Separate Loan Ledger for this vendor as a borrower.
+     * Restricted internally to Loans Receivable (1300); never touches AP.
+     */
+    public function loanLedger(Request $request, Vendor $vendor, BranchContextService $branches)
+    {
+        if ($vendor->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $vendor->branch_id);
+        }
+
+        $data = $request->validate([
+            'from'     => 'nullable|date',
+            'to'       => 'nullable|date',
+            'page'     => 'nullable|integer|min:1',
+            'per_page' => 'nullable|integer|min:1|max:100',
+        ]);
+
+        $svc = new \App\Services\PartyBalanceService();
+        $out = $svc->loanLedger([
+            'party_type' => 'vendor',
+            'party_id'   => $vendor->id,
+            'branch_id'  => $branches->effectiveBranchId($request),
+            'from'       => $data['from'] ?? null,
+            'to'         => $data['to'] ?? null,
+            'page'       => $data['page'] ?? 1,
+            'per_page'   => $data['per_page'] ?? 15,
+        ]);
+
+        return ApiResponse::success($out, 'Vendor loan ledger fetched successfully');
     }
 
     public function storePayment(Request $request, Vendor $vendor, VendorPaymentService $vendorPaymentService, BranchContextService $branches)

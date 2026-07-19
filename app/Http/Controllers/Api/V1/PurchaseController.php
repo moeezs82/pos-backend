@@ -228,9 +228,9 @@ class PurchaseController extends Controller
                     'total'        => $lineTotal,
                 ]);
 
-                Product::where('id', $row['product_id'])->where('branch_id', $branchId)->update([
-                    'price' => (float)$row['price'],
-                ]);
+                // Product::where('id', $row['product_id'])->where('branch_id', $branchId)->update([
+                //     'price' => (float)$row['price'],
+                // ]);
 
                 $toReceive = (float) $row['quantity'];
                 if ($toReceive > 0) {

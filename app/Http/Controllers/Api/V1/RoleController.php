@@ -116,7 +116,9 @@ class RoleController extends Controller
 
         $data = $request->validate([
             'permissions' => ['array'],
-            'permissions.*' => ['string'],
+            'permissions.*' => ['string', \Illuminate\Validation\Rule::notIn(\App\Support\ProtectedPermissions::masterOnly())],
+        ], [
+            'permissions.*.not_in' => 'This permission is reserved for Master Admin and cannot be assigned to a branch role.',
         ]);
 
         $perms = Permission::whereIn('name', $data['permissions'] ?? [])->get();
@@ -134,6 +136,8 @@ class RoleController extends Controller
         $all = $request->boolean('all');
 
         $q = Permission::query()
+            // Never offer Master-Admin-only permissions for branch-role editing.
+            ->whereNotIn('name', \App\Support\ProtectedPermissions::masterOnly())
             ->when($guard, fn ($q) => $q->where('guard_name', $guard))
             ->when($search, fn ($q) => $q->where('name', 'like', "%{$search}%"))
             ->orderBy('name');

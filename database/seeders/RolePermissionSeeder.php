@@ -83,9 +83,12 @@ class RolePermissionSeeder extends Seeder
             ], [
                 'branch_id' => $branch->id,
             ]);
+            // Branch Admin gets everything EXCEPT branch management and the
+            // Master-Admin-only Chart-of-Accounts permission.
             $admin->syncPermissions(Permission::whereNotIn('name', [
                 'view-branches',
                 'manage-branches',
+                'manage-accounts',
             ])->get());
 
             $manager = Role::firstOrCreate([

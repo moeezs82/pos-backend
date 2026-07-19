@@ -66,12 +66,41 @@ class CashLedgerService
 
         $cashCode   = $this->cashAccountCodeForMethod($method, $branchId);
         $cashAcct   = $this->accountByCode($cashCode);
-        $contraCode = $category === CashLedgerCategory::OTHER_EXPENSE && !empty($data['expense_account_code'])
+        $expenseOverride = $category === CashLedgerCategory::OTHER_EXPENSE && !empty($data['expense_account_code']);
+        $contraCode = $expenseOverride
             ? (string) $data['expense_account_code']
             : $category->contraAccountCode();
-        $this->accountByCode($contraCode); // validate it exists
+        // A user-supplied expense account must be a real, active EXPENSE account
+        // (never AR/AP/cash/asset/etc). Enforced server-side, not just in Flutter.
+        if ($expenseOverride) {
+            $this->assertActiveExpenseAccount($contraCode);
+        } else {
+            $this->accountByCode($contraCode); // validate it exists
+        }
 
         [$partyType, $partyId] = $this->resolveParty($data, $category);
+
+        // Category-specific counterparty rules (server-authoritative — never
+        // trust the client to hide/clear fields):
+        //  • Loans: a borrower is REQUIRED and is the only party that may be
+        //    tagged to the contra leg (Loans Receivable 1300 → Loan Ledger).
+        //  • Qameti / Other Expense: a commercial party must NEVER be attached,
+        //    so it can't contaminate Customer AR / Vendor AP. A stale party from
+        //    an old client is rejected, not silently dropped.
+        if ($category->partyIsMeaningful()) {
+            if (!$partyType || !$partyId) {
+                throw ValidationException::withMessages([
+                    'party_id' => ['A borrower (customer, vendor or user) is required for loan entries.'],
+                ]);
+            }
+        } elseif ($partyType || $partyId) {
+            throw ValidationException::withMessages([
+                'party_type' => ['This entry type cannot be linked to a customer, vendor or user. Use the reference / payee field instead.'],
+            ]);
+        } else {
+            $partyType = null;
+            $partyId = null;
+        }
 
         // Mandatory identity when no party is linked.
         $referenceName = $data['reference_name'] ?? null;
@@ -81,9 +110,18 @@ class CashLedgerService
             ]);
         }
 
-        // Safe-limit guard for cash-out from the physical cash drawer.
+        // Honour allow_negative_cash only for users authorised to approve
+        // over-limit / negative drawer cash (same policy as shift cash-out).
+        // A client boolean alone is never unrestricted authority.
+        $allowNegative = (bool) ($data['allow_negative_cash'] ?? false);
+        if ($allowNegative) {
+            $actor = auth()->user();
+            $allowNegative = $actor !== null && $actor->can('approve-shift-cash-movement');
+        }
+
+        // Safe-limit guard for a cash-out from the physical drawer.
         if (!$category->isInflow()) {
-            $this->assertCashOutWithinLimit($cashAcct, $branchId, $amount, (bool) ($data['allow_negative_cash'] ?? false));
+            $this->assertCashOutWithinLimit($cashAcct, $branchId, $registerShiftId, $method, $amount, $allowNegative);
         }
 
         return DB::transaction(function () use (
@@ -93,6 +131,8 @@ class CashLedgerService
             $entry = CashLedgerEntry::create([
                 'txn_date'       => $txnDate,
                 'branch_id'      => $branchId,
+                // Link to the active shift so the register drawer reflects this
+                // movement exactly once (Cashbook/Daybook read the journal).
                 'register_shift_id' => $registerShiftId,
                 'category'       => $category->value,
                 'direction'      => $category->direction(),
@@ -285,6 +325,24 @@ class CashLedgerService
             ]);
     }
 
+    /** Validate an expense-account override is an active EXPENSE-type account. */
+    private function assertActiveExpenseAccount(string $code): Account
+    {
+        $account = Account::with('type:id,code')->where('code', $code)->first();
+
+        if (!$account || !$account->is_active) {
+            throw ValidationException::withMessages([
+                'expense_account_code' => ['The selected expense account is missing or inactive.'],
+            ]);
+        }
+        if (optional($account->type)->code !== 'EXPENSE') {
+            throw ValidationException::withMessages([
+                'expense_account_code' => ['The selected account is not an expense account.'],
+            ]);
+        }
+        return $account;
+    }
+
     private function normalizeAmount(float|int|string $amount): float
     {
         $value = round((float) $amount, 2);
@@ -299,28 +357,63 @@ class CashLedgerService
      * unless explicitly overridden. Balance is read from the journal (the
      * single source of truth), so it already reflects sales/purchases/expenses.
      */
-    private function assertCashOutWithinLimit(Account $cashAcct, ?int $branchId, float $amount, bool $allowNegative): void
-    {
-        // Only guard physical cash by default; bank can legitimately be overdrawn-pending.
-        if ($allowNegative || $cashAcct->code !== '1000') {
+    private function assertCashOutWithinLimit(
+        Account $cashAcct,
+        ?int $branchId,
+        ?int $registerShiftId,
+        string $method,
+        float $amount,
+        bool $allowNegative
+    ): void {
+        if ($allowNegative) {
             return;
         }
 
-        $balance = (float) DB::table('journal_postings as jp')
+        // Only physical-drawer methods are limited. Non-drawer methods (bank,
+        // card, KNET, …) settle through clearing/asset accounts that may be
+        // legitimately negative pending settlement.
+        if (!app(PaymentMethodService::class)->affectsCashDrawer($branchId, $method)) {
+            return;
+        }
+
+        $available = $this->availableDrawerCash($cashAcct, $branchId, $registerShiftId);
+
+        if ($amount > $available + 1e-6) {
+            throw ValidationException::withMessages([
+                'amount' => [sprintf(
+                    'Insufficient cash on hand. Available: %.2f, requested: %.2f.',
+                    $available,
+                    $amount
+                )],
+            ]);
+        }
+    }
+
+    /**
+     * Physical cash available for a drawer cash-out.
+     *
+     * With an active register shift, this is the shift's EXPECTED drawer cash
+     * (opening float + cash receipts + cash-in − refunds/payments/expenses/
+     * cash-out), computed by RegisterShiftService — which already includes prior
+     * Cash Ledger movements linked to the shift, with no double counting.
+     *
+     * Without a shift, it falls back to the branch Cash-in-Hand journal balance.
+     */
+    private function availableDrawerCash(Account $cashAcct, ?int $branchId, ?int $registerShiftId): float
+    {
+        if ($registerShiftId) {
+            $shift = RegisterShift::find($registerShiftId);
+            if ($shift) {
+                $summary = app(RegisterShiftService::class)->summary($shift);
+                return (float) ($summary['expected_cash'] ?? 0);
+            }
+        }
+
+        return (float) DB::table('journal_postings as jp')
             ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
             ->where('jp.account_id', $cashAcct->id)
             ->when($branchId, fn ($q) => $q->where('je.branch_id', $branchId))
             ->selectRaw('COALESCE(SUM(jp.debit - jp.credit), 0) as bal')
             ->value('bal');
-
-        if ($amount > $balance + 1e-6) {
-            throw ValidationException::withMessages([
-                'amount' => [sprintf(
-                    'Insufficient cash on hand. Available: %.2f, requested: %.2f. Pass allow_negative_cash=true to override.',
-                    $balance,
-                    $amount
-                )],
-            ]);
-        }
     }
 }

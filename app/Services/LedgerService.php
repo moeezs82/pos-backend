@@ -72,6 +72,16 @@ class LedgerService
         $partyClass = $partyType === 'vendor' ? Vendor::class : Customer::class;
         $partyTypes = [$partyType, $partyClass];
 
+        // Trade ledgers are derived ONLY from the commercial control account:
+        // AR (1200) for customers, AP (2000) for vendors. A party tag on any
+        // other account (loans 1300, Qameti 1310, expenses 5300, …) must NOT
+        // contaminate the customer/vendor commercial balance.
+        $controlCodes = $partyType === 'vendor' ? ['2000'] : ['1200'];
+        $controlAccountIds = DB::table('accounts')->whereIn('code', $controlCodes)->pluck('id')->all();
+        if (empty($controlAccountIds)) {
+            $controlAccountIds = [0]; // no control account => empty ledger, never leak
+        }
+
         // Effective date expression for ordering and range
         $effDateExpr = "COALESCE(jp.created_at, je.entry_date, je.created_at)";
 
@@ -82,7 +92,7 @@ class LedgerService
         if ($from) {
             $openingQ = DB::table('journal_postings as jp')
                 ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
-                ->whereIn('jp.party_type', $partyTypes);
+                ->whereIn('jp.party_type', $partyTypes)->whereIn('jp.account_id', $controlAccountIds);
 
             if ($partyId) $openingQ->where('jp.party_id', $partyId);
             if ($branchId) $openingQ->where('je.branch_id', $branchId);
@@ -100,7 +110,7 @@ class LedgerService
         $baseQ = DB::table('journal_postings as jp')
             ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
             ->leftJoin('accounts as a', 'a.id', '=', 'jp.account_id')
-            ->whereIn('jp.party_type', $partyTypes);
+            ->whereIn('jp.party_type', $partyTypes)->whereIn('jp.account_id', $controlAccountIds);
 
         if ($partyId)  $baseQ->where('jp.party_id', $partyId);
         if ($branchId) $baseQ->where('je.branch_id', $branchId);
@@ -137,7 +147,7 @@ class LedgerService
 
             $priorQ = DB::table('journal_postings as jp')
                 ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
-                ->whereIn('jp.party_type', $partyTypes);
+                ->whereIn('jp.party_type', $partyTypes)->whereIn('jp.account_id', $controlAccountIds);
 
             if ($partyId)  $priorQ->where('jp.party_id', $partyId);
             if ($branchId) $priorQ->where('je.branch_id', $branchId);

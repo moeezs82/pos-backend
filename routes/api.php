@@ -202,6 +202,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/{customer}/receipts', [CustomerController::class, 'receipts'])->middleware('permission:view-customers');
             Route::post('/{customer}/receipts', [CustomerController::class, 'storeReceipt'])->middleware('permission:manage-receipts');
             Route::get('/{customer}/ledger', [CustomerController::class, 'ledger'])->middleware('permission:view-customers');
+            Route::get('/{customer}/loan-ledger', [CustomerController::class, 'loanLedger'])->middleware('permission:view-customers');
         });
         Route::prefix('vendors')->group(function () {
             Route::get('/', [VendorController::class, 'index'])->middleware('permission:view-vendors');
@@ -213,30 +214,46 @@ Route::prefix('v1')->group(function () {
             Route::get('/{vendor}/payments', [VendorController::class, 'payments'])->middleware('permission:view-vendors');
             Route::post('/{vendor}/payments', [VendorController::class, 'storePayment'])->middleware('permission:manage-payments');
             Route::get('/{vendor}/ledger', [VendorController::class, 'ledger'])->middleware('permission:view-vendors');
+            Route::get('/{vendor}/loan-ledger', [VendorController::class, 'loanLedger'])->middleware('permission:view-vendors');
         });
 
-        Route::prefix('accounts')->middleware('permission:manage-accounts')->group(function () {
-            Route::get('/types', [AccountController::class, 'getTypes']);
-            Route::get('/',      [AccountController::class, 'index']);
-            Route::get('/payment-mappings', [AccountController::class, 'paymentMappings']);
-            Route::put('/payment-mappings/{branchId}/{method}', [AccountController::class, 'updatePaymentMapping']);
+        Route::prefix('accounts')->group(function () {
+            // ── Operational READ-ONLY account reference ─────────────────────
+            // Cashbook / Daybook / Cash Ledger / Expense / reports populate
+            // filters and valid posting choices from these. Read-only (minimal
+            // fields), so authorized operational users keep working WITHOUT the
+            // account-management permission. Any operational feature permission
+            // (or manage-accounts, which Master Admin holds) suffices.
+            Route::middleware('permission:view-cashbook|manage-cashbook|view-reports|manage-accounts')->group(function () {
+                Route::get('/types', [AccountController::class, 'getTypes']);
+                Route::get('/',      [AccountController::class, 'index']);
+            });
 
-            Route::post('/',        [AccountController::class, 'store']);
-            Route::get('/{id}',   [AccountController::class, 'show']);
-            Route::put('/{id}',   [AccountController::class, 'update']);
-            Route::put('/{id}/activate',   [AccountController::class, 'activate']);
-            Route::put('/{id}/deactivate', [AccountController::class, 'deactivate']);
+            // ── Chart of Accounts MANAGEMENT — Master Admin only ────────────
+            // Deny-by-default via the authoritative isMasterAdmin() guard, not a
+            // (possibly stale) permission. Controller keeps its own isMasterAdmin
+            // checks as defence in depth.
+            Route::middleware('master.admin')->group(function () {
+                Route::get('/payment-mappings', [AccountController::class, 'paymentMappings']);
+                Route::put('/payment-mappings/{branchId}/{method}', [AccountController::class, 'updatePaymentMapping']);
+
+                Route::post('/',        [AccountController::class, 'store']);
+                Route::get('/{id}',   [AccountController::class, 'show']);
+                Route::put('/{id}',   [AccountController::class, 'update']);
+                Route::put('/{id}/activate',   [AccountController::class, 'activate']);
+                Route::put('/{id}/deactivate', [AccountController::class, 'deactivate']);
+            });
         });
 
         // ── Dynamic, branch-owned payment methods ──────────────────────────
         // GET / is operational: any authenticated branch user composing a
         // sale/purchase/receipt/refund/expense needs the active method list.
-        // All mutations are Master-Admin only (enforced in-controller and by
-        // the manage-accounts permission).
+        // All mutations are Master-Admin only (authoritative isMasterAdmin
+        // guard, enforced here and again in-controller).
         Route::prefix('payment-methods')->group(function () {
             Route::get('/', [PaymentMethodController::class, 'index']);
 
-            Route::middleware('permission:manage-accounts')->group(function () {
+            Route::middleware('master.admin')->group(function () {
                 Route::get('/admin',            [PaymentMethodController::class, 'adminIndex']);
                 Route::post('/',                [PaymentMethodController::class, 'store']);
                 Route::put('/{id}',             [PaymentMethodController::class, 'update']);
@@ -332,6 +349,10 @@ Route::prefix('v1')->group(function () {
             Route::get('/',             [CashLedgerController::class, 'index']);
             Route::get('/transactions', [CashLedgerController::class, 'transactions']); // unified ledger feed
             Route::get('/cash-flow',    [CashLedgerController::class, 'cashFlow']);
+            // Read-only subledgers (declared before /{entry} so they aren't captured).
+            Route::get('/subledgers/loans',    [CashLedgerController::class, 'loansSubledger']);
+            Route::get('/subledgers/qameti',   [CashLedgerController::class, 'qametiSubledger']);
+            Route::get('/subledgers/expenses', [CashLedgerController::class, 'expensesSubledger']);
             Route::get('/{entry}',      [CashLedgerController::class, 'show']);
 
             Route::post('/',             [CashLedgerController::class, 'store'])->middleware('permission:manage-cashbook');

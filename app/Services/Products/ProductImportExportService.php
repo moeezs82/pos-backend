@@ -379,21 +379,40 @@ class ProductImportExportService
             'is_active' => $this->boolOrDefault($row['is_active'] ?? null, true),
         ];
 
-        $stockQtyProvided = trim((string) ($row['stock_qty'] ?? '')) !== '';
-        $stockQty = $stockQtyProvided ? (int) $this->numericOrDefault($row['stock_qty'] ?? null, 0) : null;
+        // ── Stock quantity semantics (accounting-safe) ─────────────────────
+        // Blank  → no stock instruction (leave existing stock untouched).
+        // Number → decimal target quantity (rejected if malformed/negative).
+        $stockRaw = trim((string) ($row['stock_qty'] ?? ''));
+        $stockQtyProvided = $stockRaw !== '';
+        if ($stockQtyProvided && !is_numeric($stockRaw)) {
+            throw new RuntimeException('Stock Qty must be numeric.');
+        }
+        $stockQty = $stockQtyProvided ? round((float) $stockRaw, 3) : null;
+        if ($stockQty !== null && $stockQty < 0) {
+            throw new RuntimeException('Stock Qty cannot be negative.');
+        }
+        // Legacy mirror column on `products` — informational only. Real stock
+        // lives in product_stocks; never used for accounting.
         $data['stock_qty'] = $stockQty ?? ($existing ? $existing->stock_qty : 0);
+
+        $unitCost = (float) ($data['cost_price'] ?? 0);
+        $stock = app(\App\Services\StockPostingService::class);
 
         if ($existing) {
             $existing->update($data);
 
+            // Explicit Stock Qty = absolute target → post ONLY the delta as an
+            // inventory adjustment (moving-average valuation, balanced journal,
+            // zero-delta idempotent). Blank leaves stock, avg_cost, movements
+            // and the GL completely unchanged — a catalog cost change alone must
+            // never silently revalue on-hand inventory.
             if ($stockQtyProvided) {
-                // Explicit stock figures in the file update the branch's live
-                // stock count. Blank stock_qty leaves current stock untouched
-                // so re-importing a catalog update doesn't silently zero out
-                // inventory.
-                ProductStock::updateOrCreate(
-                    ['product_id' => $existing->id, 'branch_id' => $branchId],
-                    ['quantity' => $stockQty, 'avg_cost' => $data['cost_price'] ?? 0]
+                $stock->adjustToTarget(
+                    $existing->id,
+                    $branchId,
+                    $stockQty,
+                    $unitCost > 0 ? $unitCost : null,
+                    ['reference' => 'IMPORT:' . $sku, 'memo' => "Import stock adjustment for {$name}", 'user_id' => auth()->id()],
                 );
             }
 
@@ -401,10 +420,24 @@ class ProductImportExportService
         }
 
         $product = Product::create($data);
-        ProductStock::updateOrCreate(
-            ['product_id' => $product->id, 'branch_id' => $branchId],
-            ['quantity' => $stockQty ?? 0, 'avg_cost' => $data['cost_price'] ?? 0]
-        );
+
+        // New product with positive opening stock → same domain+accounting
+        // outcome as manual creation (DR 1400 / CR 3100). Otherwise just ensure
+        // a zero branch stock row exists (no movement, no journal).
+        if ($stockQtyProvided && $stockQty > 0) {
+            $stock->initializeOpeningStock(
+                $product->id,
+                $branchId,
+                $stockQty,
+                $unitCost,
+                ['reference' => 'IMPORT-OPENING:' . $sku, 'memo' => "Opening stock for {$name} (import)", 'user_id' => auth()->id()],
+            );
+        } else {
+            ProductStock::firstOrCreate(
+                ['product_id' => $product->id, 'branch_id' => $branchId],
+                ['quantity' => 0, 'avg_cost' => $unitCost],
+            );
+        }
 
         return 'created';
     }

@@ -66,11 +66,26 @@ class CatalogController extends Controller
             ->orderBy('id')
             ->get(self::CUSTOMER_COLUMNS);
 
+        // Active payment methods ride along so a fully offline cashier can pick
+        // a tender (Cash / KNET / Card / …) without a network round-trip.
+        $paymentMethods = app(\App\Services\PaymentMethodService::class)
+            ->activeForBranch($branchId)
+            ->map(fn ($m) => [
+                'method'              => $m->method,
+                'display_name'        => $m->presentation_name,
+                'account_id'          => $m->account_id,
+                'affects_cash_drawer' => (bool) $m->affects_cash_drawer,
+                'is_active'           => true,
+                'sort_order'          => (int) $m->sort_order,
+                'icon_key'            => $m->icon_key,
+            ])->values();
+
         return ApiResponse::success([
             'catalog_version' => $version->toIso8601String(),
             'branch_id'       => $branchId,
             'products'        => $products,
             'customers'       => $customers,
+            'payment_methods' => $paymentMethods,
             // Present so the delta and snapshot payloads have the same shape;
             // a fresh snapshot has nothing to purge.
             'deleted_products'  => [],
