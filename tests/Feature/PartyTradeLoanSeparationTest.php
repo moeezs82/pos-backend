@@ -45,7 +45,7 @@ class PartyTradeLoanSeparationTest extends TestCase
         }
         return (int) DB::table('accounts')->insertGetId([
             'code' => $code, 'name' => $name, 'account_type_id' => $typeId,
-            'type' => 'cash', 'is_active' => 1,
+            'is_active' => 1,
         ]);
     }
 

@@ -226,6 +226,9 @@ Route::prefix('v1')->group(function () {
             // (or manage-accounts, which Master Admin holds) suffices.
             Route::middleware('permission:view-cashbook|manage-cashbook|view-reports|manage-accounts')->group(function () {
                 Route::get('/types', [AccountController::class, 'getTypes']);
+                // Static route MUST be declared before the '/{id}' param route
+                // (in the master.admin group below) so it isn't swallowed.
+                Route::get('/expense-options', [AccountController::class, 'expenseOptions']);
                 Route::get('/',      [AccountController::class, 'index']);
             });
 

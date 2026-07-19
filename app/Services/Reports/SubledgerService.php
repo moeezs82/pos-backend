@@ -242,10 +242,10 @@ class SubledgerService
         $to   = $p['to'] ?? null;
         $search = trim((string) ($p['search'] ?? ''));
 
-        // "Other expense" only — exclude COGS (5100) and the purchase-price /
-        // stock-adjustment variance account (5205), which are inventory-driven,
-        // not discretionary expenses recorded here.
-        $excludedCodes = ['5100', '5205'];
+        // "Other expense" only — exclude system/inventory-driven accounts
+        // (COGS 5100, PPV 5205). Single source of truth in config/pos.php so the
+        // subledger, the expense-options endpoint and the submit guard agree.
+        $excludedCodes = (array) config('pos.system_expense_codes', ['5100', '5205']);
         $expenseAccountIds = DB::table('accounts as a')
             ->join('account_types as t', 't.id', '=', 'a.account_type_id')
             ->where('t.code', 'EXPENSE')

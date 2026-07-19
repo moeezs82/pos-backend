@@ -94,6 +94,45 @@ class AccountController extends Controller
         ]);
     }
 
+    /**
+     * Operational, read-only lookup of the EXPENSE accounts an authorized user
+     * may pick as an "Other Expense" posting target in the Cash Ledger.
+     *
+     * Server-side eligibility (never trust the client):
+     *   - active
+     *   - account type EXPENSE (by relationship, not name text)
+     *   - not a system/inventory-driven account (config pos.system_expense_codes,
+     *     e.g. 5100 COGS, 5205 PPV) — those post automatically, never manually.
+     *
+     * Returns a stable, un-paginated shape purpose-built for the dropdown.
+     */
+    public function expenseOptions(Request $request)
+    {
+        $systemCodes = (array) config('pos.system_expense_codes', []);
+
+        $rows = Account::query()
+            ->with('type:id,code')
+            ->select(['id', 'code', 'name', 'account_type_id', 'is_active'])
+            ->where('is_active', 1)
+            ->whereHas('type', fn ($t) => $t->where('code', 'EXPENSE'))
+            ->when(!empty($systemCodes), fn ($q) => $q->whereNotIn('code', $systemCodes))
+            ->orderBy('code')
+            ->get()
+            ->map(fn ($a) => [
+                'id'        => (int) $a->id,
+                'code'      => (string) $a->code,
+                'name'      => (string) $a->name,
+                'type'      => $a->type?->code,
+                'is_active' => (bool) $a->is_active,
+            ])
+            ->values();
+
+        return response()->json([
+            'success' => true,
+            'data'    => ['items' => $rows],
+        ]);
+    }
+
     public function paymentMappings(Request $request, BranchContextService $branches)
     {
         if (!$branches->isMasterAdmin($request->user())) {

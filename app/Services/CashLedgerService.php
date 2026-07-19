@@ -340,6 +340,14 @@ class CashLedgerService
                 'expense_account_code' => ['The selected account is not an expense account.'],
             ]);
         }
+        // System/inventory-driven expense accounts (COGS 5100, PPV 5205) post
+        // automatically and must never be a manual Other Expense target — even
+        // if a tampered/stale client id sends one.
+        if (in_array((string) $account->code, (array) config('pos.system_expense_codes', []), true)) {
+            throw ValidationException::withMessages([
+                'expense_account_code' => ['This account is system-managed and cannot be used for a manual expense.'],
+            ]);
+        }
         return $account;
     }
 
