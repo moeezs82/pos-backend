@@ -23,33 +23,57 @@ class VendorController extends Controller
         $page           = max(1, (int)$request->get('page', 1));
         $perPage        = max(1, min(500, (int)$request->get('per_page', 15)));
         $search         = trim((string)$request->get('search', ''));
-        $includeBalance = filter_var($request->boolean('include_balance'), FILTER_VALIDATE_BOOLEAN);
+        $balanceFilter  = strtolower((string) $request->get('balance_filter', 'all'));
+        if (!in_array($balanceFilter, ['all', 'outstanding', 'advance_credit'], true)) {
+            abort(422, 'balance_filter must be one of: all, outstanding, advance_credit.');
+        }
+        $includeBalance = $request->boolean('include_balance') || $balanceFilter !== 'all';
         $branchId       = $branches->effectiveBranchId($request); // optional
 
         // ---- Base query (cheap) ----
-        $idQuery = Vendor::query()->select('id');
+        $idQuery = Vendor::query()->select('vendors.id');
 
         if ($search !== '') {
             $idQuery->where(function ($q) use ($search) {
-                $q->where('first_name', 'like', "%{$search}%")
-                    ->orWhere('last_name',  'like', "%{$search}%")
-                    ->orWhere('email',      'like', "%{$search}%")
-                    ->orWhere('phone',      'like', "%{$search}%");
+                $q->where('vendors.first_name', 'like', "%{$search}%")
+                    ->orWhere('vendors.last_name',  'like', "%{$search}%")
+                    ->orWhere('vendors.email',      'like', "%{$search}%")
+                    ->orWhere('vendors.phone',      'like', "%{$search}%");
             });
         }
 
         if (Schema::hasColumn('vendors', 'branch_id')) {
             if (!$branches->isMasterAdmin($request->user()) && $branchId) {
-                $idQuery->where(fn ($q) => $q->where('branch_id', $branchId));
+                $idQuery->where(fn ($q) => $q->where('vendors.branch_id', $branchId));
                 // $idQuery->where(fn ($q) => $q->where('branch_id', $branchId)->orWhereNull('branch_id'));
             } elseif ($branches->isMasterAdmin($request->user()) && $request->filled('branch_id')) {
-                $idQuery->where(fn ($q) => $q->where('branch_id', $branchId));
+                $idQuery->where(fn ($q) => $q->where('vendors.branch_id', $branchId));
                 // $idQuery->where(fn ($q) => $q->where('branch_id', $branchId)->orWhereNull('branch_id'));
             }
         }
 
-        // Light + indexable sort (tweak to your indexed columns)
-        $idQuery->orderBy('first_name')->orderBy('last_name')->orderBy('id');
+        // Vendor actionable balance is AP(2000) credit-debit. Filter in the
+        // database before count/pagination; never mix loans or other accounts.
+        if ($balanceFilter !== 'all') {
+            $apAccountIds = DB::table('accounts')->where('code', '2000')->pluck('id')->all() ?: [0];
+            $partyTypes = ['vendor', Vendor::class];
+            $balanceSub = DB::table('journal_postings as bjp')
+                ->join('journal_entries as bje', 'bje.id', '=', 'bjp.journal_entry_id')
+                ->selectRaw('bjp.party_id, SUM(COALESCE(bjp.credit,0) - COALESCE(bjp.debit,0)) AS trade_balance')
+                ->whereIn('bjp.party_type', $partyTypes)
+                ->whereIn('bjp.account_id', $apAccountIds)
+                ->when($branchId, fn ($q) => $q->where('bje.branch_id', $branchId))
+                ->groupBy('bjp.party_id');
+
+            $idQuery->joinSub($balanceSub, 'party_trade_balance', fn ($join) =>
+                $join->on('party_trade_balance.party_id', '=', 'vendors.id')
+            );
+            $balanceFilter === 'outstanding'
+                ? $idQuery->where('party_trade_balance.trade_balance', '>', 0.004)
+                : $idQuery->where('party_trade_balance.trade_balance', '<', -0.004);
+        }
+
+        $idQuery->orderBy('vendors.first_name')->orderBy('vendors.last_name')->orderBy('vendors.id');
 
         $total = (clone $idQuery)->count();
 

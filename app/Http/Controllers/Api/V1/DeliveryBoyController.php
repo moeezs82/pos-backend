@@ -26,6 +26,10 @@ class DeliveryBoyController extends Controller
     public function index(Request $request, DeliveryBoyCashService $cashService, BranchContextService $branches, BranchRoleService $branchRoles)
     {
         $perPage = max(1, min(200, $request->integer('per_page', 20)));
+        $balanceFilter = strtolower((string) $request->input('balance_filter', 'all'));
+        if (!in_array($balanceFilter, ['all', 'outstanding', 'advance_credit'], true)) {
+            abort(422, 'balance_filter must be one of: all, outstanding, advance_credit.');
+        }
         $role = $request->input('role', 'delivery');
         $roleIds = $role ? $branchRoles->roleIdsForBaseName($request, (string) $role) : [];
 
@@ -52,7 +56,29 @@ class DeliveryBoyController extends Controller
                     }
                 });
             })
-            ->orderBy('name');
+            ->orderBy('users.name')
+            ->orderBy('users.id');
+
+        // Delivery balance is account 1210 debit-credit. Apply it before
+        // pagination so a million-party dataset never has to be loaded merely
+        // to find actionable balances.
+        if ($balanceFilter !== 'all') {
+            $accountId = $cashService->deliveryBoyAccountId() ?: 0;
+            $balanceSub = DB::table('journal_postings as bjp')
+                ->join('journal_entries as bje', 'bje.id', '=', 'bjp.journal_entry_id')
+                ->selectRaw('bjp.party_id, SUM(COALESCE(bjp.debit,0) - COALESCE(bjp.credit,0)) AS delivery_balance')
+                ->where('bjp.account_id', $accountId)
+                ->where('bjp.party_type', User::class)
+                ->when($branches->effectiveBranchId($request), fn ($q, $id) => $q->where('bje.branch_id', $id))
+                ->groupBy('bjp.party_id');
+
+            $query->joinSub($balanceSub, 'party_delivery_balance', fn ($join) =>
+                $join->on('party_delivery_balance.party_id', '=', 'users.id')
+            );
+            $balanceFilter === 'outstanding'
+                ? $query->where('party_delivery_balance.delivery_balance', '>', 0.004)
+                : $query->where('party_delivery_balance.delivery_balance', '<', -0.004);
+        }
 
         $paginator = $query->paginate($perPage);
         $summaries = $cashService->summariesForUsers(

@@ -24,37 +24,63 @@ class CustomerController extends Controller
         $page     = max(1, (int)$request->get('page', 1));
         $perPage  = max(1, min(500, (int)$request->get('per_page', 15)));
         $search   = trim((string)$request->get('search', ''));
-        $includeBalance = filter_var($request->boolean('include_balance'), FILTER_VALIDATE_BOOLEAN);
+        $balanceFilter = strtolower((string) $request->get('balance_filter', 'all'));
+        if (!in_array($balanceFilter, ['all', 'outstanding', 'advance_credit'], true)) {
+            abort(422, 'balance_filter must be one of: all, outstanding, advance_credit.');
+        }
+        $includeBalance = $request->boolean('include_balance') || $balanceFilter !== 'all';
         $branchId = $branches->effectiveBranchId($request); // optional
 
         // If you prefer an explicit flag name like ?with_balance=1, use that instead:
         // $includeBalance = $request->boolean('with_balance');
 
         // ---- Base query (cheap) ----
-        $idQuery = Customer::query()->select('id');
+        $idQuery = Customer::query()->select('customers.id');
 
         if ($search !== '') {
             $idQuery->where(function ($q) use ($search) {
-                $q->where('first_name', 'like', "%{$search}%")
-                    ->orWhere('last_name',  'like', "%{$search}%")
-                    ->orWhere('email',      'like', "%{$search}%")
-                    ->orWhere('phone',      'like', "%{$search}%");
+                $q->where('customers.first_name', 'like', "%{$search}%")
+                    ->orWhere('customers.last_name',  'like', "%{$search}%")
+                    ->orWhere('customers.email',      'like', "%{$search}%")
+                    ->orWhere('customers.phone',      'like', "%{$search}%");
             });
         }
 
         if (Schema::hasColumn('customers', 'branch_id')) {
             $effectiveBranchId = $branches->effectiveBranchId($request);
             if (!$branches->isMasterAdmin($request->user()) && $effectiveBranchId) {
-                $idQuery->where(fn ($q) => $q->where('branch_id', $effectiveBranchId));
+                $idQuery->where(fn ($q) => $q->where('customers.branch_id', $effectiveBranchId));
                 // $idQuery->where(fn ($q) => $q->where('branch_id', $effectiveBranchId)->orWhereNull('branch_id'));
             } elseif ($branches->isMasterAdmin($request->user()) && $request->filled('branch_id')) {
-                $idQuery->where(fn ($q) => $q->where('branch_id', $effectiveBranchId));
+                $idQuery->where(fn ($q) => $q->where('customers.branch_id', $effectiveBranchId));
                 // $idQuery->where(fn ($q) => $q->where('branch_id', $effectiveBranchId)->orWhereNull('branch_id'));
             }
         }
 
+        // Apply the actionable balance filter in SQL BEFORE count/pagination.
+        // Customer trade balance is AR(1200) debit-credit; loans and all other
+        // party-tagged accounts are deliberately excluded.
+        if ($balanceFilter !== 'all') {
+            $arAccountIds = DB::table('accounts')->where('code', '1200')->pluck('id')->all() ?: [0];
+            $partyTypes = ['customer', Customer::class];
+            $balanceSub = DB::table('journal_postings as bjp')
+                ->join('journal_entries as bje', 'bje.id', '=', 'bjp.journal_entry_id')
+                ->selectRaw('bjp.party_id, SUM(COALESCE(bjp.debit,0) - COALESCE(bjp.credit,0)) AS trade_balance')
+                ->whereIn('bjp.party_type', $partyTypes)
+                ->whereIn('bjp.account_id', $arAccountIds)
+                ->when($branchId, fn ($q) => $q->where('bje.branch_id', $branchId))
+                ->groupBy('bjp.party_id');
+
+            $idQuery->joinSub($balanceSub, 'party_trade_balance', fn ($join) =>
+                $join->on('party_trade_balance.party_id', '=', 'customers.id')
+            );
+            $balanceFilter === 'outstanding'
+                ? $idQuery->where('party_trade_balance.trade_balance', '>', 0.004)
+                : $idQuery->where('party_trade_balance.trade_balance', '<', -0.004);
+        }
+
         // Light + indexable sort (tweak to your indexed columns)
-        $idQuery->orderBy('first_name')->orderBy('last_name')->orderBy('id');
+        $idQuery->orderBy('customers.first_name')->orderBy('customers.last_name')->orderBy('customers.id');
 
         $total = (clone $idQuery)->count();
 
