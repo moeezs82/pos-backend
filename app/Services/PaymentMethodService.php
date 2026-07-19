@@ -208,9 +208,11 @@ class PaymentMethodService
             ->map(fn ($v) => (bool) $v)
             ->all();
 
-        // Legacy safety: a bare 'cash' code always affects the drawer even if
-        // configuration is missing for a historical row.
-        $flags['cash'] = $flags['cash'] ?? true;
+        // The canonical 'cash' method IS physical drawer cash by definition, so
+        // it always affects the drawer — even if a legacy/misconfigured branch
+        // row has affects_cash_drawer = 0 (which previously caused Cash to be
+        // counted in expected cash yet mislabelled "non-drawer").
+        $flags['cash'] = true;
 
         return $flags;
     }

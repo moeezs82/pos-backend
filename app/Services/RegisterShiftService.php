@@ -142,7 +142,10 @@ class RegisterShiftService
                 'name'                => $names[$code] ?? ucwords(str_replace(['_', '-'], ' ', $code)),
                 'in'                  => round($io['in'], 2),
                 'out'                 => round($io['out'], 2),
-                'affects_cash_drawer' => (bool) ($drawerFlags[$code] ?? ($code === 'cash')),
+                // Derive the badge from the SAME resolved drawer set used by the
+                // expected-cash math above, so a method counted as physical cash
+                // can never be labelled "non-drawer" (and vice-versa).
+                'affects_cash_drawer' => in_array($code, $drawerCodes, true),
             ];
         }
 
@@ -156,6 +159,232 @@ class RegisterShiftService
             'pending_sync_count' => (int) $shift->pending_sync_count,
             'method_totals' => $methodTotals,
         ];
+    }
+
+    /**
+     * Unified, READ-ONLY drawer activity for a shift: every posted, shift-linked
+     * transaction that changes physical drawer cash — cash sales, customer
+     * receipts, refunds, shift-linked Cash Ledger entries, manual movements and
+     * non-mirror cash transactions — using the SAME inclusion rules as
+     * summary(). This never writes a row; it only aggregates canonical records.
+     *
+     * Returns a directional, paginated feed (latest first) plus a reconciliation
+     * block so the shift's expected cash can be reconstructed from the list.
+     */
+    public function activity(RegisterShift $shift, array $opts = []): array
+    {
+        $branchId    = $shift->branch_id ? (int) $shift->branch_id : null;
+        $pmService   = app(\App\Services\PaymentMethodService::class);
+        $drawerFlags = $pmService->drawerFlagsForBranch($branchId);
+        $drawerCodes = array_keys(array_filter($drawerFlags));
+        if (empty($drawerCodes)) {
+            $drawerCodes = ['cash'];
+        }
+
+        $rows = $this->drawerActivityRows($shift, $drawerCodes);
+
+        // Resolve creator names in one query.
+        $userIds = array_values(array_unique(array_filter(array_map(fn ($r) => $r['user_id'] ?? null, $rows))));
+        $userNames = $userIds
+            ? DB::table('users')->whereIn('id', $userIds)->pluck('name', 'id')->all()
+            : [];
+        foreach ($rows as &$r) {
+            $r['user_name'] = $r['user_id'] ? ($userNames[$r['user_id']] ?? null) : null;
+        }
+        unset($r);
+
+        $totalIn  = round(array_sum(array_map(fn ($r) => $r['direction'] === 'in' ? $r['amount'] : 0.0, $rows)), 2);
+        $totalOut = round(array_sum(array_map(fn ($r) => $r['direction'] === 'out' ? $r['amount'] : 0.0, $rows)), 2);
+
+        $opening  = round((float) $shift->opening_cash, 2);
+        $expected = $this->summary($shift)['expected_cash'];
+        $reconExpected = round($opening + $totalIn - $totalOut, 2);
+
+        // Latest-first, deterministic tie-break by source key.
+        usort($rows, function ($a, $b) {
+            $c = strcmp((string) $b['occurred_at'], (string) $a['occurred_at']);
+            return $c !== 0 ? $c : strcmp((string) $b['key'], (string) $a['key']);
+        });
+
+        $perPage = max(1, min(100, (int) ($opts['per_page'] ?? 50)));
+        $total   = count($rows);
+        $lastPage = (int) max(1, (int) ceil($total / $perPage));
+        $page    = max(1, min($lastPage, (int) ($opts['page'] ?? 1)));
+        $items   = array_slice($rows, ($page - 1) * $perPage, $perPage);
+        // Strip the internal sort helper.
+        $items = array_map(function ($r) {
+            unset($r['user_id']);
+            return $r;
+        }, $items);
+
+        return [
+            'reconciliation' => [
+                'opening_cash'      => $opening,
+                'drawer_in'         => $totalIn,
+                'drawer_out'        => $totalOut,
+                'expected_cash'     => $expected,
+                'activity_total_in' => $totalIn,
+                'activity_total_out'=> $totalOut,
+                'reconciled_expected' => $reconExpected,
+                'is_reconciled'     => abs($reconExpected - (float) $expected) < 0.005,
+            ],
+            'items'        => array_values($items),
+            'total'        => $total,
+            'per_page'     => $perPage,
+            'current_page' => $page,
+            'last_page'    => $lastPage,
+        ];
+    }
+
+    /**
+     * Canonical drawer-affecting rows for a shift. Each economic event is read
+     * from its single canonical table exactly once; cash_transactions excludes
+     * shift-movement mirrors and sale-refund mirrors that are already counted
+     * via their own tables (matching summary()'s dedup rules).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function drawerActivityRows(RegisterShift $shift, array $drawerCodes): array
+    {
+        $rows = [];
+
+        // 1) Receipts: cash sales (sale_id set) and customer receipts (no sale).
+        foreach (DB::table('receipts')->where('register_shift_id', $shift->id)
+            ->whereIn('method', $drawerCodes)->get() as $r) {
+            $isSale = $r->sale_id !== null;
+            $rows[] = [
+                'key'         => 'receipt#' . $r->id,
+                'source_type' => 'receipt',
+                'source_id'   => (int) $r->id,
+                'kind'        => $isSale ? 'cash_sale' : 'customer_receipt',
+                'label'       => $isSale ? 'Cash Sale' : 'Customer Receipt',
+                'occurred_at' => (string) ($r->received_at ?? $r->created_at ?? ''),
+                'direction'   => 'in',
+                'amount'      => round((float) $r->amount, 2),
+                'method'      => $r->method,
+                'reference'   => $r->reference,
+                'note'        => $r->note,
+                'status'      => 'posted',
+                'user_id'     => $r->created_by,
+                'is_manual'   => false,
+            ];
+        }
+
+        // 2) Refunds (drawer): sale-return refunds + inline sale refunds.
+        foreach ([
+            ['sale_return_refunds', 'Sale Refund'],
+            ['sale_refunds', 'Sale Refund'],
+        ] as [$table, $label]) {
+            foreach (DB::table($table)->where('register_shift_id', $shift->id)
+                ->whereIn('method', $drawerCodes)->get() as $r) {
+                $a = (array) $r; // optional columns vary by table — access safely
+                $rows[] = [
+                    'key'         => $table . '#' . $a['id'],
+                    'source_type' => $table,
+                    'source_id'   => (int) $a['id'],
+                    'kind'        => 'sale_refund',
+                    'label'       => $label,
+                    'occurred_at' => (string) ($a['refunded_at'] ?? $a['created_at'] ?? ''),
+                    'direction'   => 'out',
+                    'amount'      => round((float) $a['amount'], 2),
+                    'method'      => $a['method'] ?? 'cash',
+                    'reference'   => $a['reference'] ?? ($a['note'] ?? null),
+                    'note'        => $a['note'] ?? null,
+                    'status'      => 'posted',
+                    'user_id'     => $a['created_by'] ?? null,
+                    'is_manual'   => false,
+                ];
+            }
+        }
+
+        // 3) Cash Ledger entries (posted, drawer): expenses, loans, qameti.
+        $ledgerLabels = [
+            'OTHER_EXPENSE'     => 'Other Expense',
+            'LOAN_GIVEN'        => 'Loan Given',
+            'LOAN_RECOVERED'    => 'Loan Recovered',
+            'QAMETI_PAYMENT'    => 'Qameti Payment',
+            'QAMETI_COLLECTION' => 'Qameti Collection',
+        ];
+        foreach (DB::table('cash_ledger_entries')->where('register_shift_id', $shift->id)
+            ->where('status', 'posted')->whereNull('deleted_at')
+            ->whereIn('method', $drawerCodes)->get() as $r) {
+            $rows[] = [
+                'key'         => 'cash_ledger_entry#' . $r->id,
+                'source_type' => 'cash_ledger_entry',
+                'source_id'   => (int) $r->id,
+                'kind'        => strtolower((string) $r->category),
+                'label'       => $ledgerLabels[$r->category] ?? ucwords(strtolower(str_replace('_', ' ', (string) $r->category))),
+                'occurred_at' => (string) ($r->txn_date ?? $r->created_at ?? ''),
+                'direction'   => $r->direction === 'in' ? 'in' : 'out',
+                'amount'      => round((float) $r->amount, 2),
+                'method'      => $r->method,
+                'reference'   => $r->reference_name,
+                'note'        => $r->note,
+                'status'      => 'posted',
+                'user_id'     => $r->created_by,
+                'is_manual'   => false,
+            ];
+        }
+
+        // 4) Manual shift cash movements (float in, banking out, corrections).
+        foreach (DB::table('shift_cash_movements')->where('register_shift_id', $shift->id)->get() as $r) {
+            $rows[] = [
+                'key'         => 'shift_cash_movement#' . $r->id,
+                'source_type' => 'shift_cash_movement',
+                'source_id'   => (int) $r->id,
+                'kind'        => $r->direction === 'in' ? 'manual_cash_in' : 'manual_cash_out',
+                'label'       => $r->direction === 'in' ? 'Manual Cash In' : 'Manual Cash Out',
+                'occurred_at' => (string) ($r->occurred_at ?? $r->created_at ?? ''),
+                'direction'   => $r->direction === 'in' ? 'in' : 'out',
+                'amount'      => round((float) $r->amount, 2),
+                'method'      => 'cash',
+                'reference'   => $r->reason ?? null,
+                'note'        => $r->note,
+                'status'      => 'posted',
+                'user_id'     => $r->created_by,
+                'is_manual'   => true,
+            ];
+        }
+
+        // 5) Non-mirror cash transactions (vendor payments, claim receipts, …).
+        $ctLabels = [
+            'receipt' => 'Cash Received', 'transfer_in' => 'Transfer In',
+            'payment' => 'Vendor Payment', 'expense' => 'Cash Expense', 'transfer_out' => 'Transfer Out',
+        ];
+        $cts = DB::table('cash_transactions')->where('register_shift_id', $shift->id)
+            ->whereIn('method', $drawerCodes)->where('status', 'approved')->whereNull('deleted_at')
+            ->where(function ($q) {
+                $q->whereNull('source_type')->orWhere('source_type', '!=', ShiftCashMovement::class);
+            })
+            ->where(function ($q) {
+                $q->whereNull('source_type')->orWhereNotIn('source_type', [
+                    \App\Models\SaleReturnRefund::class,
+                    \App\Models\SaleRefund::class,
+                ]);
+            })->get();
+        foreach ($cts as $r) {
+            $in = in_array($r->type, ['receipt', 'transfer_in'], true);
+            $out = in_array($r->type, ['payment', 'expense', 'transfer_out'], true);
+            if (!$in && !$out) continue;
+            $rows[] = [
+                'key'         => 'cash_transaction#' . $r->id,
+                'source_type' => 'cash_transaction',
+                'source_id'   => (int) $r->id,
+                'kind'        => (string) $r->type,
+                'label'       => $ctLabels[$r->type] ?? ucwords(str_replace('_', ' ', (string) $r->type)),
+                'occurred_at' => (string) ($r->txn_date ?? $r->created_at ?? ''),
+                'direction'   => $in ? 'in' : 'out',
+                'amount'      => round((float) $r->amount, 2),
+                'method'      => $r->method,
+                'reference'   => $r->reference ?? $r->voucher_no ?? null,
+                'note'        => $r->note,
+                'status'      => 'posted',
+                'user_id'     => $r->created_by,
+                'is_manual'   => false,
+            ];
+        }
+
+        return $rows;
     }
 
     public function movement(RegisterShift $shift, User $user, array $data): ShiftCashMovement

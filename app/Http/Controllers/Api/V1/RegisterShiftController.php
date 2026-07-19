@@ -73,6 +73,12 @@ class RegisterShiftController extends Controller
         return ApiResponse::success([
             'shift' => $shift,
             'summary' => $shift ? $service->summary($shift) : null,
+            // Unified drawer activity (read-only) so the register screen can show
+            // every cash effect without a duplicate manual movement.
+            'activity' => $shift ? $service->activity($shift, [
+                'page' => (int) $request->get('activity_page', 1),
+                'per_page' => (int) $request->get('activity_per_page', 50),
+            ]) : null,
             'occupied_shifts' => $occupied,
         ]);
     }
@@ -84,7 +90,24 @@ class RegisterShiftController extends Controller
     public function show(Request $request, RegisterShift $shift, BranchContextService $branches, RegisterShiftService $service) {
         $branches->assertCanAccessBranch($request, $shift->branch_id);
         if ((int)$shift->cashier_id !== (int)$request->user()->id && !$request->user()->can('manage-register-shifts')) abort(403);
-        return ApiResponse::success(['shift' => $shift->load(['register','cashier:id,name','closedBy:id,name','approvedBy:id,name','movements.creator:id,name','movements.approver:id,name']), 'summary' => $service->summary($shift)]);
+        return ApiResponse::success([
+            'shift' => $shift->load(['register','cashier:id,name','closedBy:id,name','approvedBy:id,name','movements.creator:id,name','movements.approver:id,name']),
+            'summary' => $service->summary($shift),
+            'activity' => $service->activity($shift, [
+                'page' => (int) $request->get('activity_page', 1),
+                'per_page' => (int) $request->get('activity_per_page', 50),
+            ]),
+        ]);
+    }
+
+    /** Dedicated paginated drawer-activity feed for large shifts. */
+    public function activity(Request $request, RegisterShift $shift, BranchContextService $branches, RegisterShiftService $service) {
+        $branches->assertCanAccessBranch($request, $shift->branch_id);
+        if ((int)$shift->cashier_id !== (int)$request->user()->id && !$request->user()->can('manage-register-shifts')) abort(403);
+        return ApiResponse::success($service->activity($shift, [
+            'page' => (int) $request->get('page', 1),
+            'per_page' => (int) $request->get('per_page', 50),
+        ]));
     }
     public function open(OpenRegisterShiftRequest $request, RegisterShiftService $service) {
         $shift = $service->open(Register::findOrFail($request->integer('register_id')), $request->user(), $request->validated());

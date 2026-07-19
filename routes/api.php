@@ -67,6 +67,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/active', [RegisterShiftController::class, 'active'])->middleware('permission:view-register-shifts');
             Route::post('/open', [RegisterShiftController::class, 'open'])->middleware('permission:open-register-shift');
             Route::get('/{shift}', [RegisterShiftController::class, 'show'])->middleware('permission:view-register-shifts');
+            Route::get('/{shift}/activity', [RegisterShiftController::class, 'activity'])->middleware('permission:view-register-shifts');
             Route::post('/{shift}/cash-movements', [RegisterShiftController::class, 'movement'])->middleware('permission:record-shift-cash-movement');
             Route::post('/{shift}/close', [RegisterShiftController::class, 'close'])->middleware('permission:close-own-register-shift');
             Route::post('/{shift}/force-close', [RegisterShiftController::class, 'forceClose'])->middleware('permission:manage-register-shifts');
