@@ -170,6 +170,15 @@ class PartyBalanceService
 
         $total = (clone $rangeQ)->count();
 
+        // Follow-latest + out-of-range clamp against this exact filtered query
+        // (ascending order => last page holds the newest loan postings).
+        $lastPage = (int) max(1, (int) ceil(($total ?: 0) / $perPage));
+        $wantsLatest = !empty($p['latest'])
+            || (isset($p['page']) && is_string($p['page']) && strtolower($p['page']) === 'last');
+        if ($wantsLatest || $page > $lastPage) {
+            $page = $lastPage;
+        }
+
         $rows = (clone $rangeQ)
             ->leftJoin('cash_ledger_entries as cle', 'cle.journal_entry_id', '=', 'je.id')
             ->selectRaw("

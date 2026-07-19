@@ -29,6 +29,7 @@ class ReportController extends Controller
             'page' => $page,
             'per_page' => $perPage,
             'branch_id' => $branches->effectiveBranchId($request),
+            'latest' => $request->boolean('latest'), // follow-latest => last page
         ]);
 
         $label = ucfirst($data['party_type']) . ' ledger fetched successfully';

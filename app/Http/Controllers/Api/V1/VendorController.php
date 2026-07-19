@@ -378,6 +378,7 @@ class VendorController extends Controller
             'page' => $page,
             'per_page' => $perPage,
             'branch_id' => $branchId,
+            'latest' => $request->boolean('latest'), // follow-latest => last page
         ]);
 
         $label = ucfirst($data['party_type']) . ' ledger fetched successfully';
@@ -399,6 +400,7 @@ class VendorController extends Controller
             'to'       => 'nullable|date',
             'page'     => 'nullable|integer|min:1',
             'per_page' => 'nullable|integer|min:1|max:100',
+            'latest'   => 'nullable|boolean',
         ]);
 
         $svc = new \App\Services\PartyBalanceService();
@@ -410,6 +412,7 @@ class VendorController extends Controller
             'to'         => $data['to'] ?? null,
             'page'       => $data['page'] ?? 1,
             'per_page'   => $data['per_page'] ?? 15,
+            'latest'     => $request->boolean('latest'),
         ]);
 
         return ApiResponse::success($out, 'Vendor loan ledger fetched successfully');

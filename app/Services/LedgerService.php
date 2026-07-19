@@ -119,6 +119,18 @@ class LedgerService
 
         $total = (clone $baseQ)->count();
 
+        // Resolve the latest page from THIS exact filtered query when the caller
+        // asks to "follow latest" (page=last / latest=1), and always clamp an
+        // out-of-range page down to the real last page instead of returning an
+        // empty impossible page. Ordering stays ascending, so the last page
+        // holds the newest postings.
+        $lastPage = (int) max(1, (int) ceil($total / $perPage));
+        $wantsLatest = !empty($p['latest'])
+            || (isset($p['page']) && is_string($p['page']) && strtolower($p['page']) === 'last');
+        if ($wantsLatest || $page > $lastPage) {
+            $page = $lastPage;
+        }
+
         $pageRows = (clone $baseQ)
             ->selectRaw("
                 jp.id as posting_id,
@@ -200,7 +212,7 @@ class LedgerService
             'total'             => $total,
             'per_page'          => $perPage,
             'current_page'      => $page,
-            'last_page'         => (int)ceil($total / $perPage),
+            'last_page'         => $lastPage,
         ];
     }
 }
