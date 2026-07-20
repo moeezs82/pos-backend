@@ -239,6 +239,8 @@ class SaleController extends Controller
 
         if (!empty($data['salesman_id'])) {
             $this->assertUserCanBeAssignedToBranch($request, $branches, (int) $data['salesman_id'], $branchId, 'salesman');
+        } else {
+            $data['salesman_id'] = auth()->id(); // default to current user if not provided
         }
         if (!empty($data['delivery_boy_id'])) {
             $this->assertUserCanBeAssignedToBranch($request, $branches, (int) $data['delivery_boy_id'], $branchId, 'delivery');

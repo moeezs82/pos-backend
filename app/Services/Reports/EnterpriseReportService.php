@@ -2,6 +2,7 @@
 
 namespace App\Services\Reports;
 
+use App\Services\PartyBalanceService;
 use Carbon\Carbon;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Query\Builder;
@@ -847,8 +848,13 @@ class EnterpriseReportService
 
         $q = DB::table('journal_postings as jp')
             ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
-            ->leftJoin('customers as c', 'c.id', '=', 'jp.party_id')
-            ->whereIn('jp.party_type', $customerTypes);
+            ->join('accounts as a', 'a.id', '=', 'jp.account_id')
+            ->join('customers as c', 'c.id', '=', 'jp.party_id')
+            ->whereIn('jp.party_type', $customerTypes)
+            // A party tag identifies who owns a posting; the control account
+            // identifies whether it is trade AR, a loan, Qameti, etc. This
+            // report must include commercial receivables (AR 1200) only.
+            ->where('a.code', PartyBalanceService::AR_CODE);
 
         // Receivables must come from ledger balance, not sales history.
         // Financial-year closing removes closed-branch sales but keeps opening
@@ -894,8 +900,12 @@ class EnterpriseReportService
 
         $q = DB::table('journal_postings as jp')
             ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
-            ->leftJoin('vendors as v', 'v.id', '=', 'jp.party_id')
-            ->whereIn('jp.party_type', $vendorTypes);
+            ->join('accounts as a', 'a.id', '=', 'jp.account_id')
+            ->join('vendors as v', 'v.id', '=', 'jp.party_id')
+            ->whereIn('jp.party_type', $vendorTypes)
+            // Vendor payables are commercial AP (2000) only. Loans use 1300
+            // and must remain exclusively in the separate Loan Ledger.
+            ->where('a.code', PartyBalanceService::AP_CODE);
 
         // Payables must come from ledger balance, not purchase history.
         // After closing a branch, old purchases are removed for that branch but
