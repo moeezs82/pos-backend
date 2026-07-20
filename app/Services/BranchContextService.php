@@ -132,7 +132,7 @@ class BranchContextService
             return null;
         }
 
-        $branch = Branch::query()->select(['id', 'name', 'location', 'phone', 'is_active'])->find($branchId);
+        $branch = Branch::query()->select(['id', 'name', 'location', 'phone', 'currency', 'is_active'])->find($branchId);
 
         return $branch ? $branch->toArray() : null;
     }

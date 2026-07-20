@@ -35,8 +35,13 @@ class BranchController extends Controller
             'name'      => 'required|string|max:255',
             'location'  => 'nullable|string',
             'phone'     => 'nullable|string',
+            'currency'  => 'sometimes|required|string|max:20',
             'is_active' => 'boolean',
         ]);
+
+        if (array_key_exists('currency', $data)) {
+            $data['currency'] = trim($data['currency']);
+        }
 
         $branch = DB::transaction(function () use ($data, $request) {
             $branch = Branch::create($data);
@@ -88,8 +93,20 @@ class BranchController extends Controller
             return ApiResponse::error('Only master admin can update branches.', 403);
         }
 
+        $data = $request->validate([
+            'name'      => 'sometimes|required|string|max:255',
+            'location'  => 'sometimes|nullable|string',
+            'phone'     => 'sometimes|nullable|string',
+            'currency'  => 'sometimes|required|string|max:20',
+            'is_active' => 'sometimes|boolean',
+        ]);
+
+        if (array_key_exists('currency', $data)) {
+            $data['currency'] = trim($data['currency']);
+        }
+
         $branch = Branch::findOrFail($id);
-        $branch->update($request->only(['name', 'location', 'phone', 'is_active']));
+        $branch->update($data);
 
         return ApiResponse::success(['branch' => $branch], 'Branch updated successfully');
     }
