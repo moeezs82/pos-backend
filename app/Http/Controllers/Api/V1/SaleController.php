@@ -9,6 +9,7 @@ use App\Models\Sale;
 use App\Models\User;
 use App\Models\StockMovement;
 use App\Services\BranchContextService;
+use App\Services\BranchFeatureService;
 use App\Services\BranchRoleService;
 use App\Services\InvoiceSequenceService;
 use App\Services\ProductBranchService;
@@ -236,6 +237,25 @@ class SaleController extends Controller
                 abort(422, 'Selected vendor belongs to a different branch.');
             }
         }
+
+        // ── Feature-flag enforcement ───────────────────────────────────────
+        /** @var BranchFeatureService $featureService */
+        $featureService = app(BranchFeatureService::class);
+
+        // Vendor on sale
+        if (!empty($data['vendor_id'])) {
+            $featureService->assertSaleVendorEnabled($branchId);
+        }
+
+        // Delivery
+        $hasDelivery = !empty($data['delivery_boy_id'])
+            || (isset($data['sale_type']) && $data['sale_type'] === 'delivery')
+            || (isset($data['delivery']) && (float) $data['delivery'] > 0);
+
+        if ($hasDelivery) {
+            $featureService->assertDeliveryEnabled($branchId);
+        }
+        // ──────────────────────────────────────────────────────────────────
 
         if (!empty($data['salesman_id'])) {
             $this->assertUserCanBeAssignedToBranch($request, $branches, (int) $data['salesman_id'], $branchId, 'salesman');
@@ -520,7 +540,10 @@ class SaleController extends Controller
 
         $sale = Sale::findOrFail($id);
         $branches->assertCanAccessBranch($request, $sale->branch_id ? (int) $sale->branch_id : null);
+
+        // Block assignment/reassignment when delivery is disabled for the branch.
         if (!empty($data['delivery_boy_id'])) {
+            app(BranchFeatureService::class)->assertDeliveryEnabled((int) $sale->branch_id);
             $this->assertUserCanBeAssignedToBranch($request, $branches, (int) $data['delivery_boy_id'], (int) $sale->branch_id, 'delivery');
         }
 

@@ -8,6 +8,7 @@ use App\Models\DeliveryBoyReceived;
 use App\Models\Sale;
 use App\Models\User;
 use App\Services\BranchContextService;
+use App\Services\BranchFeatureService;
 use App\Services\BranchRoleService;
 use App\Services\DeliveryBoyCashService;
 use App\Services\DeliveryBoyLedgerService;
@@ -269,6 +270,9 @@ class DeliveryBoyController extends Controller
         ]);
         $branchId = $branches->requireBranchId($request);
         $this->assertDeliveryBoyBranch($request, $branches, $user, $branchId);
+
+        // Block cash-received recording when delivery is disabled for this branch.
+        app(BranchFeatureService::class)->assertDeliveryEnabled($branchId);
 
         $row = DeliveryBoyReceived::query()->create([
             'user_id' => $id,

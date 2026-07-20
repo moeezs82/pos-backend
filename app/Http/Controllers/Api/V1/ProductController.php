@@ -280,9 +280,59 @@ class ProductController extends Controller
     {
         $branchId = $branches->requireBranchId($request);
         $product = $productBranches->findForBranch((int) $id, $branchId);
-        $product->delete();
 
-        return ApiResponse::success(null);
+        return DB::transaction(function () use ($product, $branchId) {
+            // Lock the branch stock row while validating deletion so an unused
+            // product cannot be removed with a non-zero on-hand quantity.
+            $stockQuantity = (float) DB::table('product_stocks')
+                ->where('product_id', $product->id)
+                ->where('branch_id', $branchId)
+                ->lockForUpdate()
+                ->value('quantity');
+
+            if (abs($stockQuantity) > 0.0005) {
+                return ApiResponse::error(
+                    'This product cannot be deleted because it has non-zero stock. '
+                    . 'Sell, return, transfer, or adjust the stock to zero, then deactivate the product if it has history.',
+                    422,
+                    [
+                        'stock' => [
+                            'Current stock quantity: ' . round($stockQuantity, 3),
+                        ],
+                    ]
+                );
+            }
+
+            // Financial and inventory history must remain linked to a visible
+            // product record. Products with history should be deactivated, not
+            // deleted, even after their current stock reaches zero.
+            $historyTables = [
+                'stock_movements',
+                'sale_items',
+                'sale_return_items',
+                'purchase_items',
+                'purchase_claim_items',
+            ];
+
+            foreach ($historyTables as $table) {
+                if (DB::table($table)->where('product_id', $product->id)->exists()) {
+                    return ApiResponse::error(
+                        'This product cannot be deleted because inventory, sale, purchase, or return history exists. '
+                        . 'Set the product as inactive to preserve accounting and reporting history.',
+                        422,
+                        [
+                            'product' => [
+                                'Historical products must be deactivated instead of deleted.',
+                            ],
+                        ]
+                    );
+                }
+            }
+
+            $product->delete();
+
+            return ApiResponse::success(null, 'Product deleted successfully.');
+        });
     }
 
     /**

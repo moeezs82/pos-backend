@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\V1\AccountController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BranchController;
+use App\Http\Controllers\Api\V1\BranchFeatureController;
 use App\Http\Controllers\Api\V1\SubscriptionController;
 use App\Http\Controllers\Api\V1\BrandController;
 use App\Http\Controllers\Api\V1\CashBookController;
@@ -112,6 +113,20 @@ Route::prefix('v1')->group(function () {
             ->middleware('permission:manage-branches');
         Route::delete('/branches/{id}', [BranchController::class, 'destroy'])
             ->middleware('permission:manage-branches');
+
+        // ── Branch feature settings ───────────────────────────────────────
+        // GET  /branch-features/current — any authenticated branch user (own branch).
+        // GET  /branches/{branch}/features — Master Admin reads any branch.
+        // PUT  /branches/{branch}/features — Master Admin writes any branch.
+        // Exempt from subscription so the lock screen can still read settings.
+        Route::get('/branch-features/current', [BranchFeatureController::class, 'current'])
+            ->withoutMiddleware('branch.subscription');
+        Route::middleware('master.admin')->group(function () {
+            Route::get('/branches/{branch}/features', [BranchFeatureController::class, 'show'])
+                ->withoutMiddleware('branch.subscription');
+            Route::put('/branches/{branch}/features', [BranchFeatureController::class, 'update'])
+                ->withoutMiddleware('branch.subscription');
+        });
 
         // users
         Route::prefix('users')->middleware('permission:view-users')->group(function () {
