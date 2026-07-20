@@ -167,7 +167,7 @@ class EnterpriseReportService
         $this->applySalesFilters($sales, $f, 's');
         $sales->groupByRaw($date)->orderBy('report_date', $f['direction']);
 
-        $rows = $sales->get()->map(fn ($r) => [
+        $rows = $sales->get()->map(fn($r) => [
             'date' => $r->report_date,
             'invoices' => (int)$r->invoices,
             'subtotal' => $this->money($r->subtotal),
@@ -190,9 +190,17 @@ class EnterpriseReportService
         $returns->groupByRaw($this->dateSql('sr.created_at'));
         foreach ($returns->get() as $r) {
             $existing = $rows->get($r->report_date, [
-                'date' => $r->report_date, 'invoices' => 0, 'subtotal' => 0.0, 'discount' => 0.0,
-                'tax' => 0.0, 'delivery' => 0.0, 'gross_sales' => 0.0, 'returns' => 0.0,
-                'net_sales' => 0.0, 'cogs' => 0.0, 'gross_profit' => 0.0,
+                'date' => $r->report_date,
+                'invoices' => 0,
+                'subtotal' => 0.0,
+                'discount' => 0.0,
+                'tax' => 0.0,
+                'delivery' => 0.0,
+                'gross_sales' => 0.0,
+                'returns' => 0.0,
+                'net_sales' => 0.0,
+                'cogs' => 0.0,
+                'gross_profit' => 0.0,
             ]);
             $existing['returns'] = $this->money($existing['returns'] + (float)$r->returns);
             $existing['net_sales'] = $this->money($existing['gross_sales'] - $existing['returns']);
@@ -210,9 +218,17 @@ class EnterpriseReportService
         foreach ($inlineReturns->get() as $r) {
             $amount = $this->money($r->returns);
             $existing = $rows->get($r->report_date, [
-                'date' => $r->report_date, 'invoices' => 0, 'subtotal' => 0.0, 'discount' => 0.0,
-                'tax' => 0.0, 'delivery' => 0.0, 'gross_sales' => 0.0, 'returns' => 0.0,
-                'net_sales' => 0.0, 'cogs' => 0.0, 'gross_profit' => 0.0,
+                'date' => $r->report_date,
+                'invoices' => 0,
+                'subtotal' => 0.0,
+                'discount' => 0.0,
+                'tax' => 0.0,
+                'delivery' => 0.0,
+                'gross_sales' => 0.0,
+                'returns' => 0.0,
+                'net_sales' => 0.0,
+                'cogs' => 0.0,
+                'gross_profit' => 0.0,
             ]);
             $existing['subtotal'] = $this->money($existing['subtotal'] + $amount);
             $existing['gross_sales'] = $this->money($existing['gross_sales'] + $amount);
@@ -225,7 +241,16 @@ class EnterpriseReportService
         $rowsArray = $rows->all();
 
         return $this->report('Sales Summary', $this->salesSummaryColumns(), $rowsArray, $this->sumTotals($rowsArray, [
-            'invoices', 'subtotal', 'discount', 'tax', 'delivery', 'gross_sales', 'returns', 'net_sales', 'cogs', 'gross_profit'
+            'invoices',
+            'subtotal',
+            'discount',
+            'tax',
+            'delivery',
+            'gross_sales',
+            'returns',
+            'net_sales',
+            'cogs',
+            'gross_profit'
         ]), $f, $export);
     }
 
@@ -287,9 +312,16 @@ class EnterpriseReportService
 
         $rows = $q->get()->map(fn($r) => $this->roundRow((array)$r))->all();
         return $this->report('Sales by Product', [
-            ['key' => 'product_id', 'label' => 'Product ID'], ['key' => 'sku', 'label' => 'SKU'], ['key' => 'barcode', 'label' => 'Barcode'],
-            ['key' => 'product', 'label' => 'Product'], ['key' => 'category', 'label' => 'Category'], ['key' => 'brand', 'label' => 'Brand'],
-            ['key' => 'quantity', 'label' => 'Quantity'], ['key' => 'revenue', 'label' => 'Revenue'], ['key' => 'cogs', 'label' => 'COGS'], ['key' => 'gross_profit', 'label' => 'Gross Profit'],
+            ['key' => 'product_id', 'label' => 'Product ID'],
+            ['key' => 'sku', 'label' => 'SKU'],
+            ['key' => 'barcode', 'label' => 'Barcode'],
+            ['key' => 'product', 'label' => 'Product'],
+            ['key' => 'category', 'label' => 'Category'],
+            ['key' => 'brand', 'label' => 'Brand'],
+            ['key' => 'quantity', 'label' => 'Quantity'],
+            ['key' => 'revenue', 'label' => 'Revenue'],
+            ['key' => 'cogs', 'label' => 'COGS'],
+            ['key' => 'gross_profit', 'label' => 'Gross Profit'],
         ], $rows, $this->sumTotals($rows, ['quantity', 'revenue', 'cogs', 'gross_profit']), $f, $export);
     }
 
@@ -350,8 +382,11 @@ class EnterpriseReportService
             ->orderBy('sale_date', $f['direction'])->orderBy('hour');
         $rows = $q->get()->map(fn($r) => $this->roundRow((array)$r))->all();
         return $this->report('Hourly Sales', [
-            ['key' => 'sale_date', 'label' => 'Date'], ['key' => 'hour', 'label' => 'Hour'],
-            ['key' => 'invoices', 'label' => 'Invoices'], ['key' => 'sales_total', 'label' => 'Sales Total'], ['key' => 'gross_profit', 'label' => 'Gross Profit'],
+            ['key' => 'sale_date', 'label' => 'Date'],
+            ['key' => 'hour', 'label' => 'Hour'],
+            ['key' => 'invoices', 'label' => 'Invoices'],
+            ['key' => 'sales_total', 'label' => 'Sales Total'],
+            ['key' => 'gross_profit', 'label' => 'Gross Profit'],
         ], $rows, $this->sumTotals($rows, ['invoices', 'sales_total', 'gross_profit']), $f, $export);
     }
 
@@ -373,8 +408,10 @@ class EnterpriseReportService
             ->orderBy('amount', $f['direction']);
         $rows = $q->get()->map(fn($r) => $this->roundRow((array)$r))->all();
         return $this->report('Payment Collection by Method', [
-            ['key' => 'method', 'label' => 'Method'], ['key' => 'branch', 'label' => 'Branch'],
-            ['key' => 'payments', 'label' => 'Payments'], ['key' => 'amount', 'label' => 'Amount'],
+            ['key' => 'method', 'label' => 'Method'],
+            ['key' => 'branch', 'label' => 'Branch'],
+            ['key' => 'payments', 'label' => 'Payments'],
+            ['key' => 'amount', 'label' => 'Amount'],
         ], $rows, $this->sumTotals($rows, ['payments', 'amount']), $f, $export);
     }
 
@@ -384,9 +421,12 @@ class EnterpriseReportService
 
         if (!$accountId) {
             return $this->report('Delivery Boy Cash Report', [
-                ['key' => 'delivery_boy_id', 'label' => 'Delivery Boy ID'], ['key' => 'delivery_boy', 'label' => 'Delivery Boy'],
-                ['key' => 'orders', 'label' => 'Ledger Debits'], ['key' => 'orders_total', 'label' => 'Amount To Receive'],
-                ['key' => 'collected', 'label' => 'Received'], ['key' => 'pending', 'label' => 'Pending'],
+                ['key' => 'delivery_boy_id', 'label' => 'Delivery Boy ID'],
+                ['key' => 'delivery_boy', 'label' => 'Delivery Boy'],
+                ['key' => 'orders', 'label' => 'Ledger Debits'],
+                ['key' => 'orders_total', 'label' => 'Amount To Receive'],
+                ['key' => 'collected', 'label' => 'Received'],
+                ['key' => 'pending', 'label' => 'Pending'],
             ], [], ['orders' => 0, 'orders_total' => 0.0, 'collected' => 0.0, 'pending' => 0.0], $f, $export);
         }
 
@@ -411,9 +451,12 @@ class EnterpriseReportService
 
         $rows = $q->get()->map(fn($r) => $this->roundRow((array)$r))->all();
         return $this->report('Delivery Boy Cash Report', [
-            ['key' => 'delivery_boy_id', 'label' => 'Delivery Boy ID'], ['key' => 'delivery_boy', 'label' => 'Delivery Boy'],
-            ['key' => 'orders', 'label' => 'Ledger Debits'], ['key' => 'orders_total', 'label' => 'Amount To Receive'],
-            ['key' => 'collected', 'label' => 'Received'], ['key' => 'pending', 'label' => 'Pending'],
+            ['key' => 'delivery_boy_id', 'label' => 'Delivery Boy ID'],
+            ['key' => 'delivery_boy', 'label' => 'Delivery Boy'],
+            ['key' => 'orders', 'label' => 'Ledger Debits'],
+            ['key' => 'orders_total', 'label' => 'Amount To Receive'],
+            ['key' => 'collected', 'label' => 'Received'],
+            ['key' => 'pending', 'label' => 'Pending'],
         ], $rows, $this->sumTotals($rows, ['orders', 'orders_total', 'collected', 'pending']), $f, $export);
     }
 
@@ -432,9 +475,13 @@ class EnterpriseReportService
             ->orderBy('s.created_at', $f['direction']);
         $totals = $this->queryTotals($q, ['subtotal', 'discount', 'total']);
         return $this->reportFromQuery('Discount Report', [
-            ['key' => 'invoice_no', 'label' => 'Invoice No'], ['key' => 'created_at', 'label' => 'Created At'],
-            ['key' => 'branch', 'label' => 'Branch'], ['key' => 'customer', 'label' => 'Customer'],
-            ['key' => 'subtotal', 'label' => 'Subtotal'], ['key' => 'discount', 'label' => 'Discount'], ['key' => 'total', 'label' => 'Total'],
+            ['key' => 'invoice_no', 'label' => 'Invoice No'],
+            ['key' => 'created_at', 'label' => 'Created At'],
+            ['key' => 'branch', 'label' => 'Branch'],
+            ['key' => 'customer', 'label' => 'Customer'],
+            ['key' => 'subtotal', 'label' => 'Subtotal'],
+            ['key' => 'discount', 'label' => 'Discount'],
+            ['key' => 'total', 'label' => 'Total'],
         ], $q, $totals, $f, $export);
     }
 
@@ -449,7 +496,11 @@ class EnterpriseReportService
             ->groupByRaw($date)->orderBy('date', $f['direction']);
         $rows = $q->get()->map(fn($r) => $this->roundRow((array)$r))->all();
         return $this->report('Tax Report', [
-            ['key' => 'date', 'label' => 'Date'], ['key' => 'invoices', 'label' => 'Invoices'], ['key' => 'taxable_sales', 'label' => 'Taxable Sales'], ['key' => 'output_tax', 'label' => 'Output Tax'], ['key' => 'total', 'label' => 'Total'],
+            ['key' => 'date', 'label' => 'Date'],
+            ['key' => 'invoices', 'label' => 'Invoices'],
+            ['key' => 'taxable_sales', 'label' => 'Taxable Sales'],
+            ['key' => 'output_tax', 'label' => 'Output Tax'],
+            ['key' => 'total', 'label' => 'Total'],
         ], $rows, $this->sumTotals($rows, ['invoices', 'taxable_sales', 'output_tax', 'total']), $f, $export);
     }
 
@@ -495,7 +546,11 @@ class EnterpriseReportService
         $rows = $rows->values()->sortBy('date', SORT_REGULAR, $f['direction'] === 'desc')->values()->all();
 
         return $this->report('Sales Return Summary', [
-            ['key' => 'date', 'label' => 'Date'], ['key' => 'returns_count', 'label' => 'Returns'], ['key' => 'subtotal', 'label' => 'Subtotal'], ['key' => 'tax', 'label' => 'Tax'], ['key' => 'total', 'label' => 'Total'],
+            ['key' => 'date', 'label' => 'Date'],
+            ['key' => 'returns_count', 'label' => 'Returns'],
+            ['key' => 'subtotal', 'label' => 'Subtotal'],
+            ['key' => 'tax', 'label' => 'Tax'],
+            ['key' => 'total', 'label' => 'Total'],
         ], $rows, $this->sumTotals($rows, ['returns_count', 'subtotal', 'tax', 'total']), $f, $export);
     }
 
@@ -545,9 +600,16 @@ class EnterpriseReportService
             ->all();
 
         return $this->report('Sales Return Detail', [
-            ['key' => 'return_no', 'label' => 'Return No'], ['key' => 'created_at', 'label' => 'Created At'], ['key' => 'invoice_no', 'label' => 'Invoice No'],
-            ['key' => 'branch', 'label' => 'Branch'], ['key' => 'customer', 'label' => 'Customer'], ['key' => 'status', 'label' => 'Status'], ['key' => 'reason', 'label' => 'Reason'],
-            ['key' => 'subtotal', 'label' => 'Subtotal'], ['key' => 'tax', 'label' => 'Tax'], ['key' => 'total', 'label' => 'Total'],
+            ['key' => 'return_no', 'label' => 'Return No'],
+            ['key' => 'created_at', 'label' => 'Created At'],
+            ['key' => 'invoice_no', 'label' => 'Invoice No'],
+            ['key' => 'branch', 'label' => 'Branch'],
+            ['key' => 'customer', 'label' => 'Customer'],
+            ['key' => 'status', 'label' => 'Status'],
+            ['key' => 'reason', 'label' => 'Reason'],
+            ['key' => 'subtotal', 'label' => 'Subtotal'],
+            ['key' => 'tax', 'label' => 'Tax'],
+            ['key' => 'total', 'label' => 'Total'],
         ], $rows, $this->sumTotals($rows, ['subtotal', 'tax', 'total']), $f, $export);
     }
 
@@ -562,7 +624,12 @@ class EnterpriseReportService
             ->groupByRaw($date)->orderBy('date', $f['direction']);
         $rows = $q->get()->map(fn($r) => $this->roundRow((array)$r))->all();
         return $this->report('Purchase Summary', [
-            ['key' => 'date', 'label' => 'Date'], ['key' => 'invoices', 'label' => 'Invoices'], ['key' => 'subtotal', 'label' => 'Subtotal'], ['key' => 'discount', 'label' => 'Discount'], ['key' => 'tax', 'label' => 'Tax'], ['key' => 'total', 'label' => 'Total'],
+            ['key' => 'date', 'label' => 'Date'],
+            ['key' => 'invoices', 'label' => 'Invoices'],
+            ['key' => 'subtotal', 'label' => 'Subtotal'],
+            ['key' => 'discount', 'label' => 'Discount'],
+            ['key' => 'tax', 'label' => 'Tax'],
+            ['key' => 'total', 'label' => 'Total'],
         ], $rows, $this->sumTotals($rows, ['invoices', 'subtotal', 'discount', 'tax', 'total']), $f, $export);
     }
 
@@ -582,9 +649,19 @@ class EnterpriseReportService
             ->orderBy('p.created_at', $f['direction']);
         $totals = $this->queryTotals($q, ['subtotal', 'discount', 'tax', 'total', 'paid', 'balance']);
         return $this->reportFromQuery('Purchase Detail', [
-            ['key' => 'invoice_no', 'label' => 'Invoice No'], ['key' => 'created_at', 'label' => 'Created At'], ['key' => 'invoice_date', 'label' => 'Invoice Date'],
-            ['key' => 'branch', 'label' => 'Branch'], ['key' => 'vendor', 'label' => 'Vendor'], ['key' => 'status', 'label' => 'Payment Status'], ['key' => 'receive_status', 'label' => 'Receive Status'],
-            ['key' => 'subtotal', 'label' => 'Subtotal'], ['key' => 'discount', 'label' => 'Discount'], ['key' => 'tax', 'label' => 'Tax'], ['key' => 'total', 'label' => 'Total'], ['key' => 'paid', 'label' => 'Paid'], ['key' => 'balance', 'label' => 'Balance'],
+            ['key' => 'invoice_no', 'label' => 'Invoice No'],
+            ['key' => 'created_at', 'label' => 'Created At'],
+            ['key' => 'invoice_date', 'label' => 'Invoice Date'],
+            ['key' => 'branch', 'label' => 'Branch'],
+            ['key' => 'vendor', 'label' => 'Vendor'],
+            ['key' => 'status', 'label' => 'Payment Status'],
+            ['key' => 'receive_status', 'label' => 'Receive Status'],
+            ['key' => 'subtotal', 'label' => 'Subtotal'],
+            ['key' => 'discount', 'label' => 'Discount'],
+            ['key' => 'tax', 'label' => 'Tax'],
+            ['key' => 'total', 'label' => 'Total'],
+            ['key' => 'paid', 'label' => 'Paid'],
+            ['key' => 'balance', 'label' => 'Balance'],
         ], $q, $totals, $f, $export);
     }
 
@@ -606,8 +683,15 @@ class EnterpriseReportService
             ->orderBy('purchase_total', $f['direction']);
         $rows = $q->get()->map(fn($r) => $this->roundRow((array)$r))->all();
         return $this->report('Purchase by Product', [
-            ['key' => 'product_id', 'label' => 'Product ID'], ['key' => 'sku', 'label' => 'SKU'], ['key' => 'barcode', 'label' => 'Barcode'], ['key' => 'product', 'label' => 'Product'], ['key' => 'category', 'label' => 'Category'], ['key' => 'brand', 'label' => 'Brand'],
-            ['key' => 'ordered_qty', 'label' => 'Ordered Qty'], ['key' => 'received_qty', 'label' => 'Received Qty'], ['key' => 'purchase_total', 'label' => 'Purchase Total'],
+            ['key' => 'product_id', 'label' => 'Product ID'],
+            ['key' => 'sku', 'label' => 'SKU'],
+            ['key' => 'barcode', 'label' => 'Barcode'],
+            ['key' => 'product', 'label' => 'Product'],
+            ['key' => 'category', 'label' => 'Category'],
+            ['key' => 'brand', 'label' => 'Brand'],
+            ['key' => 'ordered_qty', 'label' => 'Ordered Qty'],
+            ['key' => 'received_qty', 'label' => 'Received Qty'],
+            ['key' => 'purchase_total', 'label' => 'Purchase Total'],
         ], $rows, $this->sumTotals($rows, ['ordered_qty', 'received_qty', 'purchase_total']), $f, $export);
     }
 
@@ -633,7 +717,12 @@ class EnterpriseReportService
             ->orderBy('total', $f['direction']);
         $rows = $q->get()->map(fn($r) => $this->roundRow((array)$r))->all();
         return $this->report($title, [
-            ['key' => $alias, 'label' => ucfirst($alias)], ['key' => 'invoices', 'label' => 'Invoices'], ['key' => 'subtotal', 'label' => 'Subtotal'], ['key' => 'discount', 'label' => 'Discount'], ['key' => 'tax', 'label' => 'Tax'], ['key' => 'total', 'label' => 'Total'],
+            ['key' => $alias, 'label' => ucfirst($alias)],
+            ['key' => 'invoices', 'label' => 'Invoices'],
+            ['key' => 'subtotal', 'label' => 'Subtotal'],
+            ['key' => 'discount', 'label' => 'Discount'],
+            ['key' => 'tax', 'label' => 'Tax'],
+            ['key' => 'total', 'label' => 'Total'],
         ], $rows, $this->sumTotals($rows, ['invoices', 'subtotal', 'discount', 'tax', 'total']), $f, $export);
     }
 
@@ -652,7 +741,11 @@ class EnterpriseReportService
             ->orderBy('amount', $f['direction']);
         $rows = $q->get()->map(fn($r) => $this->roundRow((array)$r))->all();
         return $this->report('Vendor Payment Summary', [
-            ['key' => 'vendor', 'label' => 'Vendor'], ['key' => 'branch', 'label' => 'Branch'], ['key' => 'method', 'label' => 'Method'], ['key' => 'payments', 'label' => 'Payments'], ['key' => 'amount', 'label' => 'Amount'],
+            ['key' => 'vendor', 'label' => 'Vendor'],
+            ['key' => 'branch', 'label' => 'Branch'],
+            ['key' => 'method', 'label' => 'Method'],
+            ['key' => 'payments', 'label' => 'Payments'],
+            ['key' => 'amount', 'label' => 'Amount'],
         ], $rows, $this->sumTotals($rows, ['payments', 'amount']), $f, $export);
     }
 
@@ -670,7 +763,13 @@ class EnterpriseReportService
             ->orderBy('date', $f['direction']);
         $rows = $q->get()->map(fn($r) => $this->roundRow((array)$r))->all();
         return $this->report('Purchase Claim Summary', [
-            ['key' => 'date', 'label' => 'Date'], ['key' => 'type', 'label' => 'Type'], ['key' => 'status', 'label' => 'Status'], ['key' => 'claims', 'label' => 'Claims'], ['key' => 'subtotal', 'label' => 'Subtotal'], ['key' => 'tax', 'label' => 'Tax'], ['key' => 'total', 'label' => 'Total'],
+            ['key' => 'date', 'label' => 'Date'],
+            ['key' => 'type', 'label' => 'Type'],
+            ['key' => 'status', 'label' => 'Status'],
+            ['key' => 'claims', 'label' => 'Claims'],
+            ['key' => 'subtotal', 'label' => 'Subtotal'],
+            ['key' => 'tax', 'label' => 'Tax'],
+            ['key' => 'total', 'label' => 'Total'],
         ], $rows, $this->sumTotals($rows, ['claims', 'subtotal', 'tax', 'total']), $f, $export);
     }
 
@@ -690,7 +789,17 @@ class EnterpriseReportService
             ->orderBy('pc.created_at', $f['direction']);
         $totals = $this->queryTotals($q, ['subtotal', 'tax', 'total']);
         return $this->reportFromQuery('Purchase Claim Detail', [
-            ['key' => 'claim_no', 'label' => 'Claim No'], ['key' => 'created_at', 'label' => 'Created At'], ['key' => 'purchase_invoice', 'label' => 'Purchase Invoice'], ['key' => 'branch', 'label' => 'Branch'], ['key' => 'vendor', 'label' => 'Vendor'], ['key' => 'type', 'label' => 'Type'], ['key' => 'status', 'label' => 'Status'], ['key' => 'reason', 'label' => 'Reason'], ['key' => 'subtotal', 'label' => 'Subtotal'], ['key' => 'tax', 'label' => 'Tax'], ['key' => 'total', 'label' => 'Total'],
+            ['key' => 'claim_no', 'label' => 'Claim No'],
+            ['key' => 'created_at', 'label' => 'Created At'],
+            ['key' => 'purchase_invoice', 'label' => 'Purchase Invoice'],
+            ['key' => 'branch', 'label' => 'Branch'],
+            ['key' => 'vendor', 'label' => 'Vendor'],
+            ['key' => 'type', 'label' => 'Type'],
+            ['key' => 'status', 'label' => 'Status'],
+            ['key' => 'reason', 'label' => 'Reason'],
+            ['key' => 'subtotal', 'label' => 'Subtotal'],
+            ['key' => 'tax', 'label' => 'Tax'],
+            ['key' => 'total', 'label' => 'Total'],
         ], $q, $totals, $f, $export);
     }
 
@@ -714,7 +823,17 @@ class EnterpriseReportService
             ->orderBy($lowOnly ? 'ps.quantity' : 'p.name', $lowOnly ? 'asc' : 'asc');
         $totals = $this->queryTotals($q, ['quantity', 'stock_value']);
         return $this->reportFromQuery($lowOnly ? 'Low Stock / Reorder Report' : 'Current Stock', [
-            ['key' => 'product_id', 'label' => 'Product ID'], ['key' => 'sku', 'label' => 'SKU'], ['key' => 'barcode', 'label' => 'Barcode'], ['key' => 'product', 'label' => 'Product'], ['key' => 'category', 'label' => 'Category'], ['key' => 'brand', 'label' => 'Brand'], ['key' => 'branch', 'label' => 'Branch'], ['key' => 'quantity', 'label' => 'Quantity'], ['key' => 'reorder_level', 'label' => 'Reorder Level'], ['key' => 'avg_cost', 'label' => 'Avg Cost'], ['key' => 'stock_value', 'label' => 'Stock Value'],
+            ['key' => 'product_id', 'label' => 'Product ID'],
+            ['key' => 'sku', 'label' => 'SKU'],
+            ['key' => 'barcode', 'label' => 'Barcode'],
+            ['key' => 'product', 'label' => 'Product'],
+            ['key' => 'category', 'label' => 'Category'],
+            ['key' => 'brand', 'label' => 'Brand'],
+            ['key' => 'branch', 'label' => 'Branch'],
+            ['key' => 'quantity', 'label' => 'Quantity'],
+            ['key' => 'reorder_level', 'label' => 'Reorder Level'],
+            ['key' => 'avg_cost', 'label' => 'Avg Cost'],
+            ['key' => 'stock_value', 'label' => 'Stock Value'],
         ], $q, $totals, $f, $export);
     }
 
@@ -735,7 +854,11 @@ class EnterpriseReportService
             ->orderBy('stock_value', $f['direction']);
         $rows = $q->get()->map(fn($r) => $this->roundRow((array)$r))->all();
         return $this->report('Stock Valuation', [
-            ['key' => 'branch', 'label' => 'Branch'], ['key' => 'category', 'label' => 'Category'], ['key' => 'products', 'label' => 'Products'], ['key' => 'quantity', 'label' => 'Quantity'], ['key' => 'stock_value', 'label' => 'Stock Value'],
+            ['key' => 'branch', 'label' => 'Branch'],
+            ['key' => 'category', 'label' => 'Category'],
+            ['key' => 'products', 'label' => 'Products'],
+            ['key' => 'quantity', 'label' => 'Quantity'],
+            ['key' => 'stock_value', 'label' => 'Stock Value'],
         ], $rows, $this->sumTotals($rows, ['products', 'quantity', 'stock_value']), $f, $export);
     }
 
@@ -755,7 +878,15 @@ class EnterpriseReportService
             ->orderBy('sm.created_at', $f['direction']);
         $totals = $this->queryTotals($q, ['quantity']);
         return $this->reportFromQuery($adjustmentsOnly ? 'Inventory Adjustment Report' : 'Stock Movement Ledger', [
-            ['key' => 'created_at', 'label' => 'Created At'], ['key' => 'branch', 'label' => 'Branch'], ['key' => 'sku', 'label' => 'SKU'], ['key' => 'barcode', 'label' => 'Barcode'], ['key' => 'product', 'label' => 'Product'], ['key' => 'category', 'label' => 'Category'], ['key' => 'type', 'label' => 'Type'], ['key' => 'quantity', 'label' => 'Quantity'], ['key' => 'reference', 'label' => 'Reference'],
+            ['key' => 'created_at', 'label' => 'Created At'],
+            ['key' => 'branch', 'label' => 'Branch'],
+            ['key' => 'sku', 'label' => 'SKU'],
+            ['key' => 'barcode', 'label' => 'Barcode'],
+            ['key' => 'product', 'label' => 'Product'],
+            ['key' => 'category', 'label' => 'Category'],
+            ['key' => 'type', 'label' => 'Type'],
+            ['key' => 'quantity', 'label' => 'Quantity'],
+            ['key' => 'reference', 'label' => 'Reference'],
         ], $q, $totals, $f, $export);
     }
 
@@ -778,7 +909,19 @@ class EnterpriseReportService
         $totals = $this->queryTotals($q, ['cash_in', 'cash_out', 'amount']);
         $totals['net_cash'] = $this->money(($totals['cash_in'] ?? 0) - ($totals['cash_out'] ?? 0));
         return $this->reportFromQuery('Cashbook', [
-            ['key' => 'created_at', 'label' => 'Created At'], ['key' => 'txn_date', 'label' => 'Txn Date'], ['key' => 'branch', 'label' => 'Branch'], ['key' => 'account', 'label' => 'Account'], ['key' => 'type', 'label' => 'Type'], ['key' => 'method', 'label' => 'Method'], ['key' => 'reference', 'label' => 'Reference'], ['key' => 'voucher_no', 'label' => 'Voucher No'], ['key' => 'cash_in', 'label' => 'Cash In'], ['key' => 'cash_out', 'label' => 'Cash Out'], ['key' => 'amount', 'label' => 'Amount'], ['key' => 'status', 'label' => 'Status'], ['key' => 'note', 'label' => 'Note'],
+            ['key' => 'created_at', 'label' => 'Created At'],
+            ['key' => 'txn_date', 'label' => 'Txn Date'],
+            ['key' => 'branch', 'label' => 'Branch'],
+            ['key' => 'account', 'label' => 'Account'],
+            ['key' => 'type', 'label' => 'Type'],
+            ['key' => 'method', 'label' => 'Method'],
+            ['key' => 'reference', 'label' => 'Reference'],
+            ['key' => 'voucher_no', 'label' => 'Voucher No'],
+            ['key' => 'cash_in', 'label' => 'Cash In'],
+            ['key' => 'cash_out', 'label' => 'Cash Out'],
+            ['key' => 'amount', 'label' => 'Amount'],
+            ['key' => 'status', 'label' => 'Status'],
+            ['key' => 'note', 'label' => 'Note'],
         ], $q, $totals, $f, $export);
     }
 
@@ -795,50 +938,235 @@ class EnterpriseReportService
             ->orderBy('je.created_at', $f['direction']);
         $rows = $q->get()->map(fn($r) => $this->roundRow((array)$r))->all();
         return $this->report('Daybook', [
-            ['key' => 'journal_entry_id', 'label' => 'Entry ID'], ['key' => 'entry_date', 'label' => 'Entry Date'], ['key' => 'created_at', 'label' => 'Created At'], ['key' => 'branch', 'label' => 'Branch'], ['key' => 'memo', 'label' => 'Memo'], ['key' => 'reference_type', 'label' => 'Reference Type'], ['key' => 'reference_id', 'label' => 'Reference ID'], ['key' => 'debit', 'label' => 'Debit'], ['key' => 'credit', 'label' => 'Credit'],
+            ['key' => 'journal_entry_id', 'label' => 'Entry ID'],
+            ['key' => 'entry_date', 'label' => 'Entry Date'],
+            ['key' => 'created_at', 'label' => 'Created At'],
+            ['key' => 'branch', 'label' => 'Branch'],
+            ['key' => 'memo', 'label' => 'Memo'],
+            ['key' => 'reference_type', 'label' => 'Reference Type'],
+            ['key' => 'reference_id', 'label' => 'Reference ID'],
+            ['key' => 'debit', 'label' => 'Debit'],
+            ['key' => 'credit', 'label' => 'Credit'],
         ], $rows, $this->sumTotals($rows, ['debit', 'credit']), $f, $export);
     }
 
     private function profitLoss(array $f, bool $export): array
     {
-        $sales = DB::table('sales as s')->whereNull('s.deleted_at');
+        /*
+     * Sales
+     */
+        $sales = DB::table('sales as s')
+            ->whereNull('s.deleted_at');
+
         $this->applyDateRange($sales, 's.created_at', $f);
         $this->applySalesFilters($sales, $f, 's');
-        $s = $sales->selectRaw('COALESCE(SUM(total),0) as revenue, COALESCE(SUM(discount),0) as discounts, COALESCE(SUM(cogs),0) as cogs, COALESCE(SUM(gross_profit),0) as gross_profit')->first();
 
-        $returns = DB::table('sale_returns as sr')->leftJoin('sales as s', 's.id', '=', 'sr.sale_id');
+        $salesSummary = $sales
+            ->selectRaw('
+            COALESCE(SUM(s.total), 0) as revenue,
+            COALESCE(SUM(s.discount), 0) as discounts,
+            COALESCE(SUM(s.cogs), 0) as cogs,
+            COALESCE(SUM(s.gross_profit), 0) as gross_profit
+        ')
+            ->first();
+
+        /*
+     * Formal sale returns
+     */
+        $returns = DB::table('sale_returns as sr')
+            ->leftJoin('sales as s', 's.id', '=', 'sr.sale_id');
+
         $this->applyDateRange($returns, 'sr.created_at', $f);
         $this->applyReturnFilters($returns, $f, 'sr', 's');
-        $formalReturnTotal = (float)($returns->selectRaw('COALESCE(SUM(sr.total),0) as total')->first()->total ?? 0);
+
+        $formalReturnTotal = (float) (
+            $returns
+            ->selectRaw('COALESCE(SUM(sr.total), 0) as total')
+            ->first()
+            ->total ?? 0
+        );
+
+        /*
+     * Inline returns entered through negative sale quantities.
+     */
         $inlineReturnTotal = $this->inlineReturnTotal($f, true);
         $returnTotal = $formalReturnTotal + $inlineReturnTotal;
-        $grossSales = (float)($s->revenue ?? 0) + $inlineReturnTotal;
-        $netSales = $grossSales - $returnTotal;
-        $grossProfitAfterReturns = (float)($s->gross_profit ?? 0) - $formalReturnTotal;
 
-        $expenses = DB::table('cash_transactions as ct')->whereNull('ct.deleted_at')->where('ct.type', 'expense');
-        $this->applyDateRange($expenses, 'ct.created_at', $f);
-        $this->applyWhere($expenses, 'ct.branch_id', $f['branch_id']);
-        $expenseTotal = (float)($expenses->selectRaw('COALESCE(SUM(ct.amount),0) as total')->first()->total ?? 0);
+        /*
+     * Preserve the existing sales/return presentation.
+     */
+        $grossSales = (float) ($salesSummary->revenue ?? 0)
+            + $inlineReturnTotal;
+
+        $netSales = $grossSales - $returnTotal;
+
+        $cogs = (float) ($salesSummary->cogs ?? 0);
+
+        $grossProfitAfterReturns =
+            (float) ($salesSummary->gross_profit ?? 0)
+            - $formalReturnTotal;
+
+        /*
+     * Operating expenses must come from the General Ledger.
+     *
+     * Cash Ledger entries post:
+     *     Dr Expense
+     *     Cr Cash/Bank
+     *
+     * Therefore journal_postings are the accounting source of truth.
+     * Reversals are automatically handled because they post opposite
+     * debit/credit values.
+     */
+        $systemExpenseCodes = array_values(array_unique(array_merge(
+            ['5100', '5205'],
+            (array) config('pos.system_expense_codes', [])
+        )));
+
+        $expenses = DB::table('journal_postings as jp')
+            ->join(
+                'journal_entries as je',
+                'je.id',
+                '=',
+                'jp.journal_entry_id'
+            )
+            ->join(
+                'accounts as a',
+                'a.id',
+                '=',
+                'jp.account_id'
+            )
+            ->join(
+                'account_types as at',
+                'at.id',
+                '=',
+                'a.account_type_id'
+            )
+            ->where('at.code', 'EXPENSE')
+            ->whereNotIn('a.code', $systemExpenseCodes);
+
+        /*
+     * Use the accounting entry date for the reporting period.
+     * Fall back to created_at for legacy journal entries.
+     */
+        $effectiveJournalDate =
+            'COALESCE(je.entry_date, je.created_at)';
+
+        if ($f['from']) {
+            $expenses->whereRaw(
+                "{$effectiveJournalDate} >= ?",
+                [$f['from']->toDateTimeString()]
+            );
+        }
+
+        if ($f['to']) {
+            $expenses->whereRaw(
+                "{$effectiveJournalDate} <= ?",
+                [$f['to']->toDateTimeString()]
+            );
+        }
+
+        $this->applyWhere(
+            $expenses,
+            'je.branch_id',
+            $f['branch_id']
+        );
+
+        /*
+     * Expense accounts have a debit nature:
+     * expense = debit - credit
+     *
+     * This correctly handles:
+     * - Cash Ledger expenses
+     * - Bank/Card/KNET expenses
+     * - Other journal-posted operating expenses
+     * - Voids and reversing entries
+     */
+        $expenseTotal = (float) (
+            $expenses
+            ->selectRaw(
+                'COALESCE(SUM(jp.debit - jp.credit), 0) as total'
+            )
+            ->first()
+            ->total ?? 0
+        );
+
+        $grossSales = $this->money($grossSales);
+        $returnTotal = $this->money($returnTotal);
+        $netSales = $this->money($netSales);
+        $cogs = $this->money($cogs);
+        $grossProfitAfterReturns =
+            $this->money($grossProfitAfterReturns);
+        $expenseTotal = $this->money($expenseTotal);
+
+        $netProfit = $this->money(
+            $grossProfitAfterReturns - $expenseTotal
+        );
 
         $rows = [
-            ['section' => 'Income', 'description' => 'Gross Sales', 'amount' => $this->money($grossSales)],
-            ['section' => 'Contra Income', 'description' => 'Sales Returns', 'amount' => $this->money(-$returnTotal)],
-            ['section' => 'Net Income', 'description' => 'Net Sales', 'amount' => $this->money($netSales)],
-            ['section' => 'Cost', 'description' => 'Cost of Goods Sold', 'amount' => $this->money(-($s->cogs ?? 0))],
-            ['section' => 'Gross Profit', 'description' => 'Gross Profit After Returns', 'amount' => $this->money($grossProfitAfterReturns)],
-            ['section' => 'Expense', 'description' => 'Operating Expenses', 'amount' => $this->money(-$expenseTotal)],
-            ['section' => 'Net Profit', 'description' => 'Net Profit', 'amount' => $this->money($grossProfitAfterReturns - $expenseTotal)],
+            [
+                'section' => 'Income',
+                'description' => 'Gross Sales',
+                'amount' => $grossSales,
+            ],
+            [
+                'section' => 'Contra Income',
+                'description' => 'Sales Returns',
+                'amount' => $this->money(-$returnTotal),
+            ],
+            [
+                'section' => 'Net Income',
+                'description' => 'Net Sales',
+                'amount' => $netSales,
+            ],
+            [
+                'section' => 'Cost',
+                'description' => 'Cost of Goods Sold',
+                'amount' => $this->money(-$cogs),
+            ],
+            [
+                'section' => 'Gross Profit',
+                'description' => 'Gross Profit After Returns',
+                'amount' => $grossProfitAfterReturns,
+            ],
+            [
+                'section' => 'Expense',
+                'description' => 'Operating Expenses',
+                'amount' => $this->money(-$expenseTotal),
+            ],
+            [
+                'section' => 'Net Profit',
+                'description' => 'Net Profit',
+                'amount' => $netProfit,
+            ],
         ];
-        return $this->report('Profit & Loss', [
-            ['key' => 'section', 'label' => 'Section'], ['key' => 'description', 'label' => 'Description'], ['key' => 'amount', 'label' => 'Amount'],
-        ], $rows, [
-            'gross_sales' => $this->money($grossSales),
-            'returns' => $this->money($returnTotal),
-            'cogs' => $this->money($s->cogs ?? 0),
-            'expenses' => $this->money($expenseTotal),
-            'net_profit' => $this->money($grossProfitAfterReturns - $expenseTotal),
-        ], $f, $export);
+
+        return $this->report(
+            'Profit & Loss',
+            [
+                [
+                    'key' => 'section',
+                    'label' => 'Section',
+                ],
+                [
+                    'key' => 'description',
+                    'label' => 'Description',
+                ],
+                [
+                    'key' => 'amount',
+                    'label' => 'Amount',
+                ],
+            ],
+            $rows,
+            [
+                'gross_sales' => $grossSales,
+                'returns' => $returnTotal,
+                'cogs' => $cogs,
+                'expenses' => $expenseTotal,
+                'net_profit' => $netProfit,
+            ],
+            $f,
+            $export
+        );
     }
 
     private function customerReceivables(array $f, bool $export): array
@@ -958,7 +1286,12 @@ class EnterpriseReportService
             ->orderBy('a.code');
         $rows = $q->get()->map(fn($r) => $this->roundRow((array)$r))->all();
         return $this->report('Trial Balance', [
-            ['key' => 'code', 'label' => 'Account Code'], ['key' => 'account', 'label' => 'Account'], ['key' => 'account_type', 'label' => 'Type'], ['key' => 'debit', 'label' => 'Debit'], ['key' => 'credit', 'label' => 'Credit'], ['key' => 'balance', 'label' => 'Balance'],
+            ['key' => 'code', 'label' => 'Account Code'],
+            ['key' => 'account', 'label' => 'Account'],
+            ['key' => 'account_type', 'label' => 'Type'],
+            ['key' => 'debit', 'label' => 'Debit'],
+            ['key' => 'credit', 'label' => 'Credit'],
+            ['key' => 'balance', 'label' => 'Balance'],
         ], $rows, $this->sumTotals($rows, ['debit', 'credit', 'balance']), $f, $export);
     }
 
@@ -980,7 +1313,18 @@ class EnterpriseReportService
         $totals = $this->queryTotals($q, ['debit', 'credit']);
         $totals['balance'] = $this->money(($totals['debit'] ?? 0) - ($totals['credit'] ?? 0));
         return $this->reportFromQuery('Ledger Detail', [
-            ['key' => 'entry_date', 'label' => 'Entry Date'], ['key' => 'created_at', 'label' => 'Created At'], ['key' => 'branch', 'label' => 'Branch'], ['key' => 'code', 'label' => 'Account Code'], ['key' => 'account', 'label' => 'Account'], ['key' => 'memo', 'label' => 'Memo'], ['key' => 'reference_type', 'label' => 'Reference Type'], ['key' => 'reference_id', 'label' => 'Reference ID'], ['key' => 'party_type', 'label' => 'Party Type'], ['key' => 'party_id', 'label' => 'Party ID'], ['key' => 'debit', 'label' => 'Debit'], ['key' => 'credit', 'label' => 'Credit'],
+            ['key' => 'entry_date', 'label' => 'Entry Date'],
+            ['key' => 'created_at', 'label' => 'Created At'],
+            ['key' => 'branch', 'label' => 'Branch'],
+            ['key' => 'code', 'label' => 'Account Code'],
+            ['key' => 'account', 'label' => 'Account'],
+            ['key' => 'memo', 'label' => 'Memo'],
+            ['key' => 'reference_type', 'label' => 'Reference Type'],
+            ['key' => 'reference_id', 'label' => 'Reference ID'],
+            ['key' => 'party_type', 'label' => 'Party Type'],
+            ['key' => 'party_id', 'label' => 'Party ID'],
+            ['key' => 'debit', 'label' => 'Debit'],
+            ['key' => 'credit', 'label' => 'Credit'],
         ], $q, $totals, $f, $export);
     }
 
@@ -991,7 +1335,7 @@ class EnterpriseReportService
         if (isset($report['columns']) && is_array($report['columns'])) {
             $report['columns'] = array_values(array_filter(
                 $report['columns'],
-                fn ($column) => !in_array((string) ($column['key'] ?? ''), $hiddenKeys, true)
+                fn($column) => !in_array((string) ($column['key'] ?? ''), $hiddenKeys, true)
             ));
         }
 
@@ -1273,11 +1617,16 @@ class EnterpriseReportService
     private function salesSummaryColumns(): array
     {
         return [
-            ['key' => 'date', 'label' => 'Date'], ['key' => 'invoices', 'label' => 'Invoices'],
-            ['key' => 'subtotal', 'label' => 'Subtotal'], ['key' => 'discount', 'label' => 'Discount'],
-            ['key' => 'tax', 'label' => 'Tax'], ['key' => 'delivery', 'label' => 'Delivery'],
-            ['key' => 'gross_sales', 'label' => 'Gross Sales'], ['key' => 'returns', 'label' => 'Returns'],
-            ['key' => 'net_sales', 'label' => 'Net Sales'], ['key' => 'cogs', 'label' => 'COGS'],
+            ['key' => 'date', 'label' => 'Date'],
+            ['key' => 'invoices', 'label' => 'Invoices'],
+            ['key' => 'subtotal', 'label' => 'Subtotal'],
+            ['key' => 'discount', 'label' => 'Discount'],
+            ['key' => 'tax', 'label' => 'Tax'],
+            ['key' => 'delivery', 'label' => 'Delivery'],
+            ['key' => 'gross_sales', 'label' => 'Gross Sales'],
+            ['key' => 'returns', 'label' => 'Returns'],
+            ['key' => 'net_sales', 'label' => 'Net Sales'],
+            ['key' => 'cogs', 'label' => 'COGS'],
             ['key' => 'gross_profit', 'label' => 'Gross Profit'],
         ];
     }

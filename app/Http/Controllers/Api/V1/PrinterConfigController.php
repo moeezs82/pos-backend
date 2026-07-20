@@ -88,6 +88,28 @@ class PrinterConfigController extends Controller
             'kitchen_network_port'        => 'nullable|integer|min:1|max:65535',
             'kitchen_local_printer_name'  => 'nullable|string|max:255',
             'kitchen_invoice_template'    => 'nullable|in:standard,compact,kitchen',
+            // New generic names. Legacy kitchen_* keys remain accepted below
+            // so already-deployed clients continue working during upgrades.
+            'secondary_print_enabled'      => 'nullable|boolean',
+            'secondary_network_ip'          => 'nullable|string|max:100',
+            'secondary_network_port'        => 'nullable|integer|min:1|max:65535',
+            'secondary_local_printer_name'  => 'nullable|string|max:255',
+            'secondary_invoice_template'    => 'nullable|in:standard,compact,kitchen',
+            'barcode_print_enabled'         => 'nullable|boolean',
+            'barcode_connection'            => 'nullable|in:dialog,local,network',
+            'barcode_local_printer_name'     => 'nullable|string|max:255',
+            'barcode_network_ip'             => 'nullable|string|max:100',
+            'barcode_network_port'           => 'nullable|integer|min:1|max:65535',
+            'barcode_printer_language'       => 'nullable|in:driver,zpl,tspl',
+            'barcode_label_width_mm'         => 'nullable|numeric|min:15|max:200',
+            'barcode_label_height_mm'        => 'nullable|numeric|min:10|max:200',
+            'barcode_label_gap_mm'           => 'nullable|numeric|min:0|max:20',
+            'barcode_dpi'                    => 'nullable|integer|in:203,300,600',
+            'barcode_orientation'            => 'nullable|in:portrait,landscape',
+            'barcode_currency'               => 'nullable|string|max:20',
+            'barcode_show_name'              => 'nullable|boolean',
+            'barcode_show_value'             => 'nullable|boolean',
+            'barcode_show_price'             => 'nullable|boolean',
         ]);
 
         if ($data['active_connection'] === 'network' && empty($data['network_ip'])) {
@@ -95,6 +117,50 @@ class PrinterConfigController extends Controller
         }
         if ($data['active_connection'] === 'local' && empty($data['local_printer_name'])) {
             return ApiResponse::error('Select a local printer to use a local printer.', 422);
+        }
+
+        // Normalize the user-facing Secondary Printer keys into the existing
+        // kitchen_* columns. This is intentionally backwards compatible and
+        // avoids a risky production rename of already-populated columns.
+        $secondaryMap = [
+            'secondary_print_enabled' => 'kitchen_print_enabled',
+            'secondary_network_ip' => 'kitchen_network_ip',
+            'secondary_network_port' => 'kitchen_network_port',
+            'secondary_local_printer_name' => 'kitchen_local_printer_name',
+            'secondary_invoice_template' => 'kitchen_invoice_template',
+        ];
+        foreach ($secondaryMap as $newKey => $legacyKey) {
+            if (array_key_exists($newKey, $data)) {
+                $data[$legacyKey] = $data[$newKey];
+            }
+            unset($data[$newKey]);
+        }
+
+        // Do not inject barcode defaults into partial requests from an older
+        // deployed client: database defaults cover new rows, while omitted
+        // fields on existing rows must remain unchanged during rolling updates.
+        foreach (['barcode_print_enabled', 'barcode_show_name', 'barcode_show_value', 'barcode_show_price'] as $key) {
+            if (array_key_exists($key, $data)) {
+                $data[$key] = (bool) $data[$key];
+            }
+        }
+        if (array_key_exists('barcode_currency', $data)) {
+            $data['barcode_currency'] = trim((string) $data['barcode_currency']);
+        }
+
+        if (($data['barcode_print_enabled'] ?? false) === true) {
+            $connection = $data['barcode_connection'] ?? 'dialog';
+            if ($connection === 'local' && empty($data['barcode_local_printer_name'])) {
+                return ApiResponse::error('Select an installed printer for barcode labels.', 422);
+            }
+            if ($connection === 'network') {
+                if (empty($data['barcode_network_ip'])) {
+                    return ApiResponse::error('Enter the barcode printer network address.', 422);
+                }
+                if (!in_array($data['barcode_printer_language'] ?? null, ['zpl', 'tspl'], true)) {
+                    return ApiResponse::error('Direct network barcode printing requires ZPL or TSPL.', 422);
+                }
+            }
         }
 
         $data['updated_by'] = $request->user()->id;
@@ -150,9 +216,30 @@ class PrinterConfigController extends Controller
                 'kitchen_network_port'       => 9100,
                 'kitchen_local_printer_name' => null,
                 'kitchen_invoice_template'   => InvoiceTemplate::KITCHEN->value,
+                'secondary_print_enabled'      => false,
+                'secondary_network_ip'          => null,
+                'secondary_network_port'        => 9100,
+                'secondary_local_printer_name'  => null,
+                'secondary_invoice_template'    => InvoiceTemplate::KITCHEN->value,
+                'barcode_print_enabled'         => false,
+                'barcode_connection'            => 'dialog',
+                'barcode_local_printer_name'     => null,
+                'barcode_network_ip'             => null,
+                'barcode_network_port'           => 9100,
+                'barcode_printer_language'       => 'driver',
+                'barcode_label_width_mm'         => 50.0,
+                'barcode_label_height_mm'        => 30.0,
+                'barcode_label_gap_mm'           => 2.0,
+                'barcode_dpi'                    => 203,
+                'barcode_orientation'            => 'portrait',
+                'barcode_currency'               => 'KD',
+                'barcode_show_name'              => true,
+                'barcode_show_value'             => true,
+                'barcode_show_price'             => true,
                 // Legacy keys the existing app build already expects.
                 'main_printer_name'          => null,
                 'kitchen_printer_name'       => null,
+                'secondary_printer_name'     => null,
             ];
         }
 
@@ -177,10 +264,34 @@ class PrinterConfigController extends Controller
             'kitchen_network_port'       => $setting->kitchen_network_port,
             'kitchen_local_printer_name' => $setting->kitchen_local_printer_name,
             'kitchen_invoice_template'   => $setting->kitchen_invoice_template ?? InvoiceTemplate::KITCHEN->value,
+            // Preferred generic names for new clients.
+            'secondary_print_enabled'      => (bool) $setting->kitchen_print_enabled,
+            'secondary_network_ip'          => $setting->kitchen_network_ip,
+            'secondary_network_port'        => $setting->kitchen_network_port,
+            'secondary_local_printer_name'  => $setting->kitchen_local_printer_name,
+            'secondary_invoice_template'    => $setting->kitchen_invoice_template ?? InvoiceTemplate::KITCHEN->value,
+            'barcode_print_enabled'         => (bool) ($setting->barcode_print_enabled ?? false),
+            'barcode_connection'            => $setting->barcode_connection ?? 'dialog',
+            'barcode_local_printer_name'     => $setting->barcode_local_printer_name,
+            'barcode_network_ip'             => $setting->barcode_network_ip,
+            'barcode_network_port'           => $setting->barcode_network_port ?? 9100,
+            'barcode_printer_language'       => $setting->barcode_printer_language ?? 'driver',
+            'barcode_label_width_mm'         => (float) ($setting->barcode_label_width_mm ?? 50),
+            'barcode_label_height_mm'        => (float) ($setting->barcode_label_height_mm ?? 30),
+            'barcode_label_gap_mm'           => (float) ($setting->barcode_label_gap_mm ?? 2),
+            'barcode_dpi'                    => (int) ($setting->barcode_dpi ?? 203),
+            'barcode_orientation'            => $setting->barcode_orientation ?? 'portrait',
+            'barcode_currency'               => $setting->barcode_currency ?? 'KD',
+            'barcode_show_name'              => (bool) ($setting->barcode_show_name ?? true),
+            'barcode_show_value'             => (bool) ($setting->barcode_show_value ?? true),
+            'barcode_show_price'             => (bool) ($setting->barcode_show_price ?? true),
             // Legacy keys for the existing PrinterConfig.fromJson() shape.
             'main_printer_name'          => $mainPrinterName,
             'kitchen_printer_name'       => $setting->kitchen_print_enabled
-                ? ($setting->active_connection === 'local' ? $setting->kitchen_local_printer_name : $setting->kitchen_network_ip)
+                ? ($setting->kitchen_local_printer_name ?: $setting->kitchen_network_ip)
+                : null,
+            'secondary_printer_name'     => $setting->kitchen_print_enabled
+                ? ($setting->kitchen_local_printer_name ?: $setting->kitchen_network_ip)
                 : null,
         ];
     }
