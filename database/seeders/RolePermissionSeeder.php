@@ -46,6 +46,7 @@ class RolePermissionSeeder extends Seeder
             'manage-roles',
             'manage-receipts',
             'manage-payments',
+            'reverse-party-payments',
             'view-register-shifts',
             'open-register-shift',
             'close-own-register-shift',
@@ -89,6 +90,7 @@ class RolePermissionSeeder extends Seeder
                 'view-branches',
                 'manage-branches',
                 'manage-accounts',
+                'reverse-party-payments',
             ])->get());
 
             $manager = Role::firstOrCreate([

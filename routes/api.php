@@ -217,6 +217,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/{customer}/sales', [CustomerController::class, 'sales'])->middleware('permission:view-customers');
             Route::get('/{customer}/receipts', [CustomerController::class, 'receipts'])->middleware('permission:view-customers');
             Route::post('/{customer}/receipts', [CustomerController::class, 'storeReceipt'])->middleware('permission:manage-receipts');
+            Route::post('/{customer}/receipts/{receipt}/reverse', [CustomerController::class, 'reverseReceipt'])->middleware('permission:reverse-party-payments');
             Route::get('/{customer}/ledger', [CustomerController::class, 'ledger'])->middleware('permission:view-customers');
             Route::get('/{customer}/loan-ledger', [CustomerController::class, 'loanLedger'])->middleware('permission:view-customers');
         });
@@ -229,6 +230,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/{vendor}/purchases', [VendorController::class, 'purchases'])->middleware('permission:view-vendors');
             Route::get('/{vendor}/payments', [VendorController::class, 'payments'])->middleware('permission:view-vendors');
             Route::post('/{vendor}/payments', [VendorController::class, 'storePayment'])->middleware('permission:manage-payments');
+            Route::post('/{vendor}/payments/{payment}/reverse', [VendorController::class, 'reversePayment'])->middleware('permission:reverse-party-payments');
             Route::get('/{vendor}/ledger', [VendorController::class, 'ledger'])->middleware('permission:view-vendors');
             Route::get('/{vendor}/loan-ledger', [VendorController::class, 'loanLedger'])->middleware('permission:view-vendors');
         });

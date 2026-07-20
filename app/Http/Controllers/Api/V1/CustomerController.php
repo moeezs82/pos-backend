@@ -7,9 +7,11 @@ use App\Http\Requests\CustomerRequest;
 use App\Http\Resources\CustomerResource;
 use App\Http\Response\ApiResponse;
 use App\Models\Customer;
+use App\Models\Receipt;
 use App\Services\BranchContextService;
 use App\Services\CustomerPaymentService;
 use App\Services\LedgerService;
+use App\Services\PartyPaymentReversalService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -488,5 +490,34 @@ class CustomerController extends Controller
                 'Payment added successfully'
             );
         });
+    }
+
+    public function reverseReceipt(
+        Request $request,
+        Customer $customer,
+        Receipt $receipt,
+        PartyPaymentReversalService $reversals,
+        BranchContextService $branches
+    ) {
+        $data = $request->validate([
+            'reason' => 'required|string|min:3|max:1000',
+        ]);
+
+        if ((int) $receipt->customer_id !== (int) $customer->id) {
+            abort(404);
+        }
+        if ($receipt->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $receipt->branch_id);
+        }
+
+        $receipt = $reversals->reverseCustomerReceipt(
+            $receipt,
+            trim($data['reason']),
+            (int) $request->user()->id
+        );
+
+        return ApiResponse::success([
+            'payment' => $receipt,
+        ], 'Customer receipt reversed successfully. Record the correct receipt separately.');
     }
 }

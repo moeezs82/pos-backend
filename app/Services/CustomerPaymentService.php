@@ -51,12 +51,24 @@ class CustomerPaymentService
             throw new ValidationException($v);
         }
 
+        $registerShiftId = $data['register_shift_id'] ?? null;
+        if (!$registerShiftId && app(PaymentMethodService::class)->affectsCashDrawer(
+            isset($data['branch_id']) ? (int) $data['branch_id'] : null,
+            $data['method']
+        )) {
+            $registerShiftId = \App\Models\RegisterShift::query()
+                ->where('cashier_id', auth()->id())
+                ->where('branch_id', $data['branch_id'])
+                ->where('status', 'open')
+                ->value('id');
+        }
+
         // create receipt (DB model Receipt assumed)
         $r = Receipt::create([
             'customer_id' => $data['customer_id'],
             'sale_id' => $data['sale_id'] ?? null,
             'branch_id'   => $data['branch_id'],
-            'register_shift_id' => $data['register_shift_id'] ?? null,
+            'register_shift_id' => $registerShiftId,
             'received_at' => $data['received_at'] ?? now()->toDateString(),
             'method'      => $data['method'],
             'amount'      => round($data['amount'], 2),

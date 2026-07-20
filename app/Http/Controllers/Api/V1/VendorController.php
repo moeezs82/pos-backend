@@ -7,8 +7,10 @@ use App\Http\Requests\VendorRequest;
 use App\Http\Resources\VendorResource;
 use App\Http\Response\ApiResponse;
 use App\Models\Vendor;
+use App\Models\VendorPayment;
 use App\Services\BranchContextService;
 use App\Services\LedgerService;
+use App\Services\PartyPaymentReversalService;
 use App\Services\VendorPaymentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -480,5 +482,34 @@ class VendorController extends Controller
 
             return response()->json($vp, 201);
         });
+    }
+
+    public function reversePayment(
+        Request $request,
+        Vendor $vendor,
+        VendorPayment $payment,
+        PartyPaymentReversalService $reversals,
+        BranchContextService $branches
+    ) {
+        $data = $request->validate([
+            'reason' => 'required|string|min:3|max:1000',
+        ]);
+
+        if ((int) $payment->vendor_id !== (int) $vendor->id) {
+            abort(404);
+        }
+        if ($payment->branch_id) {
+            $branches->assertCanAccessBranch($request, (int) $payment->branch_id);
+        }
+
+        $payment = $reversals->reverseVendorPayment(
+            $payment,
+            trim($data['reason']),
+            (int) $request->user()->id
+        );
+
+        return ApiResponse::success([
+            'payment' => $payment,
+        ], 'Vendor payment reversed successfully. Record the correct payment separately.');
     }
 }

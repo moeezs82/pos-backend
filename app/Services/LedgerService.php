@@ -110,6 +110,14 @@ class LedgerService
         $baseQ = DB::table('journal_postings as jp')
             ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
             ->leftJoin('accounts as a', 'a.id', '=', 'jp.account_id')
+            ->leftJoin('receipts as receipt_doc', function ($join) {
+                $join->on('receipt_doc.id', '=', 'je.reference_id')
+                    ->where('je.reference_type', '=', \App\Models\Receipt::class);
+            })
+            ->leftJoin('vendor_payments as vendor_payment_doc', function ($join) {
+                $join->on('vendor_payment_doc.id', '=', 'je.reference_id')
+                    ->where('je.reference_type', '=', \App\Models\VendorPayment::class);
+            })
             ->whereIn('jp.party_type', $partyTypes)->whereIn('jp.account_id', $controlAccountIds);
 
         if ($partyId)  $baseQ->where('jp.party_id', $partyId);
@@ -138,9 +146,19 @@ class LedgerService
                 $effDateExpr as eff_date,
                 je.branch_id,
                 je.memo,
+                je.reference_type,
+                je.reference_id,
                 a.name as account_name,
                 COALESCE(jp.debit, 0)  as debit,
-                COALESCE(jp.credit, 0) as credit
+                COALESCE(jp.credit, 0) as credit,
+                receipt_doc.id as receipt_document_id,
+                receipt_doc.reversed_at as receipt_reversed_at,
+                receipt_doc.reversal_reason as receipt_reversal_reason,
+                receipt_doc.reversal_journal_entry_id as receipt_reversal_journal_entry_id,
+                vendor_payment_doc.id as vendor_payment_document_id,
+                vendor_payment_doc.reversed_at as vendor_payment_reversed_at,
+                vendor_payment_doc.reversal_reason as vendor_payment_reversal_reason,
+                vendor_payment_doc.reversal_journal_entry_id as vendor_payment_reversal_journal_entry_id
             ")
             ->orderByRaw("$effDateExpr ASC")
             ->orderBy('jp.id', 'ASC')
@@ -190,6 +208,45 @@ class LedgerService
             $credit = (float)$r->credit;
             $running += ($debit - $credit);
 
+            $paymentType = null;
+            $paymentId = null;
+            $reversedAt = null;
+            $reversalReason = null;
+            $reversalJournalEntryId = null;
+            $originalDirection = false;
+
+            if ($r->receipt_document_id) {
+                $paymentType = 'customer_receipt';
+                $paymentId = (int) $r->receipt_document_id;
+                $reversedAt = $r->receipt_reversed_at;
+                $reversalReason = $r->receipt_reversal_reason;
+                $reversalJournalEntryId = $r->receipt_reversal_journal_entry_id
+                    ? (int) $r->receipt_reversal_journal_entry_id : null;
+                $originalDirection = $credit > 0;
+            } elseif ($r->vendor_payment_document_id) {
+                $paymentType = 'vendor_payment';
+                $paymentId = (int) $r->vendor_payment_document_id;
+                $reversedAt = $r->vendor_payment_reversed_at;
+                $reversalReason = $r->vendor_payment_reversal_reason;
+                $reversalJournalEntryId = $r->vendor_payment_reversal_journal_entry_id
+                    ? (int) $r->vendor_payment_reversal_journal_entry_id : null;
+                $originalDirection = $debit > 0;
+            }
+
+            $isReversal = $reversalJournalEntryId !== null
+                && $reversalJournalEntryId === (int) $r->journal_entry_id;
+            $canReverse = $paymentId !== null && $originalDirection && !$isReversal && !$reversedAt;
+            $description = $r->memo;
+            if ($paymentType === 'customer_receipt') {
+                $description = $isReversal
+                    ? "Reversal of customer receipt #{$paymentId}"
+                    : "Customer receipt #{$paymentId}";
+            } elseif ($paymentType === 'vendor_payment') {
+                $description = $isReversal
+                    ? "Reversal of vendor payment #{$paymentId}"
+                    : "Vendor payment #{$paymentId}";
+            }
+
             return [
                 'posting_id'       => (int)$r->posting_id,
                 'journal_entry_id' => (int)$r->journal_entry_id,
@@ -197,9 +254,17 @@ class LedgerService
                 'branch_id'        => (int)$r->branch_id,
                 'account_name'     => $r->account_name,   // may be null
                 'memo'             => $r->memo,
+                'description'      => $description,
                 'debit'            => $debit,
                 'credit'           => $credit,
                 'balance'          => round($running, 2),
+                'payment_type'     => $paymentType,
+                'payment_id'       => $paymentId,
+                'payment_status'   => $isReversal ? 'reversal' : ($reversedAt ? 'reversed' : 'posted'),
+                'can_reverse'      => $canReverse,
+                'is_reversal'      => $isReversal,
+                'reversed_at'      => $reversedAt ? (string) $reversedAt : null,
+                'reversal_reason'  => $reversalReason,
             ];
         });
 
