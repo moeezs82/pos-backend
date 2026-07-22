@@ -47,8 +47,8 @@ class EnterpriseReportService
                 'inventory-adjustment' => 'Inventory Adjustment Report',
             ],
             'accounting' => [
-                'cashbook' => 'Cashbook',
-                'daybook' => 'Daybook',
+                // 'cashbook' => 'Cashbook',
+                // 'daybook' => 'Daybook',
                 'profit-loss' => 'Profit & Loss',
                 'customer-receivables' => 'Customer Receivables / AR Aging Base',
                 'vendor-payables' => 'Vendor Payables / AP Aging Base',
@@ -1050,19 +1050,19 @@ class EnterpriseReportService
      * Fall back to created_at for legacy journal entries.
      */
         $effectiveJournalDate =
-            'COALESCE(je.entry_date, je.created_at)';
+            'DATE(COALESCE(je.entry_date, je.created_at))';
 
         if ($f['from']) {
             $expenses->whereRaw(
                 "{$effectiveJournalDate} >= ?",
-                [$f['from']->toDateTimeString()]
+                [$f['from']->toDateString()]
             );
         }
 
         if ($f['to']) {
             $expenses->whereRaw(
                 "{$effectiveJournalDate} <= ?",
-                [$f['to']->toDateTimeString()]
+                [$f['to']->toDateString()]
             );
         }
 
