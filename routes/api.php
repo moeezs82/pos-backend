@@ -140,12 +140,12 @@ Route::prefix('v1')->group(function () {
             Route::post('/{user}/roles',        [UserController::class, 'syncRoles'])->middleware('permission:manage-users');
             // Route::post('/{user}/permissions',  [UserController::class, 'syncPermissions'])->middleware('permission:manage-users');
         });
-        Route::prefix('delivery-boys')->group(function () {
+        Route::prefix('delivery-boys')->middleware('permission:view-delivery')->group(function () {
             Route::get('/', [DeliveryBoyController::class, 'index']);
             Route::get('/{id}/cash-summary', [DeliveryBoyController::class, 'cashSummary']);
             Route::get('/{id}/orders', [DeliveryBoyController::class, 'orders']);
             Route::get('/{id}/received', [DeliveryBoyController::class, 'received']);
-            Route::post('/{id}/received', [DeliveryBoyController::class, 'storeReceived']);
+            Route::post('/{id}/received', [DeliveryBoyController::class, 'storeReceived'])->middleware('permission:receive-delivery-cash');
         });
 
         // Roles
@@ -210,10 +210,10 @@ Route::prefix('v1')->group(function () {
 
         Route::prefix('customers')->group(function () {
             Route::get('/', [CustomerController::class, 'index'])->middleware('permission:view-customers');
-            Route::post('/', [CustomerController::class, 'store'])->middleware('permission:view-customers');
+            Route::post('/', [CustomerController::class, 'store'])->middleware('permission:manage-customers');
             Route::get('/{customer}', [CustomerController::class, 'show'])->middleware('permission:view-customers');
-            Route::put('/{customer}', [CustomerController::class, 'update'])->middleware('permission:view-customers');
-            Route::delete('/{customer}', [CustomerController::class, 'destroy'])->middleware('permission:view-customers');
+            Route::put('/{customer}', [CustomerController::class, 'update'])->middleware('permission:manage-customers');
+            Route::delete('/{customer}', [CustomerController::class, 'destroy'])->middleware('permission:manage-customers');
             Route::get('/{customer}/sales', [CustomerController::class, 'sales'])->middleware('permission:view-customers');
             Route::get('/{customer}/receipts', [CustomerController::class, 'receipts'])->middleware('permission:view-customers');
             Route::post('/{customer}/receipts', [CustomerController::class, 'storeReceipt'])->middleware('permission:manage-receipts');
@@ -295,7 +295,7 @@ Route::prefix('v1')->group(function () {
 
         Route::prefix('sales')->group(function () {
             // --- Returns ---
-            Route::prefix('returns')->middleware('permission:manage-sales')->group(function () {
+            Route::prefix('returns')->middleware('permission:refund-sale')->group(function () {
                 Route::get('/', [SaleReturnController::class, 'index']);
                 Route::get('/{id}', [SaleReturnController::class, 'show']);
                 Route::post('/', [SaleReturnController::class, 'store']);
@@ -380,7 +380,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/{entry}/void', [CashLedgerController::class, 'void'])->middleware('permission:manage-cashbook');
         });
 
-        Route::post('/expenses', [ExpenseController::class, 'store']);
+        Route::post('/expenses', [ExpenseController::class, 'store'])->middleware('permission:manage-cashbook');
 
         // Day Book: day-by-day view of the SAME unified cash ledger
         // (every cash movement: receipts, vendor payments, expenses, Qameti, loans, refunds)

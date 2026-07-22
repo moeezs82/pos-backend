@@ -9,7 +9,6 @@ use App\Models\Sale;
 use App\Models\User;
 use App\Models\StockMovement;
 use App\Services\BranchContextService;
-use App\Services\BranchFeatureService;
 use App\Services\BranchRoleService;
 use App\Services\InvoiceSequenceService;
 use App\Services\ProductBranchService;
@@ -177,6 +176,13 @@ class SaleController extends Controller
             'offline_invoice_no' => 'nullable|string|max:80',
         ]);
 
+        $containsReturn = collect($data['items'])->contains(function ($item) {
+            return (float) ($item['quantity'] ?? 0) < 0;
+        });
+        if ($containsReturn && !$request->user()->can('refund-sale')) {
+            abort(403, 'You do not have permission to process sale returns or refunds.');
+        }
+
         // Idempotent replay: if this exact client_ref was already synced
         // (earlier attempt, double-tap of "Sync Now", a retried request
         // whose original response never made it back to the device), return
@@ -238,29 +244,8 @@ class SaleController extends Controller
             }
         }
 
-        // ── Feature-flag enforcement ───────────────────────────────────────
-        /** @var BranchFeatureService $featureService */
-        $featureService = app(BranchFeatureService::class);
-
-        // Vendor on sale
-        if (!empty($data['vendor_id'])) {
-            $featureService->assertSaleVendorEnabled($branchId);
-        }
-
-        // Delivery
-        $hasDelivery = !empty($data['delivery_boy_id'])
-            || (isset($data['sale_type']) && $data['sale_type'] === 'delivery')
-            || (isset($data['delivery']) && (float) $data['delivery'] > 0);
-
-        if ($hasDelivery) {
-            $featureService->assertDeliveryEnabled($branchId);
-        }
-        // ──────────────────────────────────────────────────────────────────
-
         if (!empty($data['salesman_id'])) {
             $this->assertUserCanBeAssignedToBranch($request, $branches, (int) $data['salesman_id'], $branchId, 'salesman');
-        } else {
-            $data['salesman_id'] = auth()->id(); // default to current user if not provided
         }
         if (!empty($data['delivery_boy_id'])) {
             $this->assertUserCanBeAssignedToBranch($request, $branches, (int) $data['delivery_boy_id'], $branchId, 'delivery');
@@ -540,10 +525,7 @@ class SaleController extends Controller
 
         $sale = Sale::findOrFail($id);
         $branches->assertCanAccessBranch($request, $sale->branch_id ? (int) $sale->branch_id : null);
-
-        // Block assignment/reassignment when delivery is disabled for the branch.
         if (!empty($data['delivery_boy_id'])) {
-            app(BranchFeatureService::class)->assertDeliveryEnabled((int) $sale->branch_id);
             $this->assertUserCanBeAssignedToBranch($request, $branches, (int) $data['delivery_boy_id'], (int) $sale->branch_id, 'delivery');
         }
 

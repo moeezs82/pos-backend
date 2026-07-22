@@ -14,6 +14,8 @@ final class ProtectedPermissions
     /** @var string[] Master-Admin-only permission names. */
     private const MASTER_ONLY = [
         'manage-accounts',
+        'view-branches',
+        'manage-branches',
     ];
 
     /** @return string[] */

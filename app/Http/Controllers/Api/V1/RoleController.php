@@ -11,6 +11,7 @@ use Illuminate\Http\Request;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\PermissionRegistrar;
+use App\Support\PermissionCatalog;
 
 class RoleController extends Controller
 {
@@ -53,7 +54,7 @@ class RoleController extends Controller
         ]);
 
         if (!empty($data['permissions'])) {
-            $perms = Permission::whereIn('name', $data['permissions'])->get();
+            $perms = Permission::whereIn('name', PermissionCatalog::normalize($data['permissions']))->get();
             $role->syncPermissions($perms);
         }
 
@@ -87,7 +88,7 @@ class RoleController extends Controller
         $role->save();
 
         if (array_key_exists('permissions', $data)) {
-            $perms = Permission::whereIn('name', $data['permissions'] ?? [])->get();
+            $perms = Permission::whereIn('name', PermissionCatalog::normalize($data['permissions'] ?? []))->get();
             $role->syncPermissions($perms);
         }
 
@@ -121,7 +122,7 @@ class RoleController extends Controller
             'permissions.*.not_in' => 'This permission is reserved for Master Admin and cannot be assigned to a branch role.',
         ]);
 
-        $perms = Permission::whereIn('name', $data['permissions'] ?? [])->get();
+        $perms = Permission::whereIn('name', PermissionCatalog::normalize($data['permissions'] ?? []))->get();
         $role->syncPermissions($perms);
         app(PermissionRegistrar::class)->forgetCachedPermissions();
 
@@ -143,7 +144,9 @@ class RoleController extends Controller
             ->orderBy('name');
 
         if ($all) {
-            return ApiResponse::success($q->get(['id', 'name', 'guard_name']));
+            return ApiResponse::success($q->get(['id', 'name', 'guard_name'])->map(function ($permission) {
+                return array_merge($permission->toArray(), PermissionCatalog::metadata($permission->name));
+            })->values());
         }
 
         return ApiResponse::success($q->paginate($perPage, ['id', 'name', 'guard_name']));

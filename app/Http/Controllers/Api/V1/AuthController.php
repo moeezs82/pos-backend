@@ -102,6 +102,7 @@ class AuthController extends Controller
             'is_active' => (bool) $user->is_active,
             'role' => $roles,
             'roles' => $roles,
+            'permissions' => $user->getAllPermissions()->pluck('name')->values(),
         ];
 
         if ($roles->contains(fn ($role) => User::normalizeRoleName((string) $role) === User::normalizeRoleName('delivery'))) {

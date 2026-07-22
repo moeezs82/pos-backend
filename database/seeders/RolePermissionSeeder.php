@@ -15,7 +15,6 @@ class RolePermissionSeeder extends Seeder
     public function run(): void
     {
         $permissions = collect([
-            'manage-stock',
             'view-reports',
             'view-users',
             'manage-users',
@@ -46,7 +45,6 @@ class RolePermissionSeeder extends Seeder
             'manage-roles',
             'manage-receipts',
             'manage-payments',
-            'reverse-party-payments',
             'view-register-shifts',
             'open-register-shift',
             'close-own-register-shift',
@@ -54,6 +52,10 @@ class RolePermissionSeeder extends Seeder
             'record-shift-cash-movement',
             'approve-shift-variance',
             'approve-shift-cash-movement',
+            'reverse-party-payments',
+            'view-delivery',
+            'manage-delivery',
+            'receive-delivery-cash',
         ])->unique()->values();
 
         foreach ($permissions as $perm) {
@@ -90,7 +92,6 @@ class RolePermissionSeeder extends Seeder
                 'view-branches',
                 'manage-branches',
                 'manage-accounts',
-                'reverse-party-payments',
             ])->get());
 
             $manager = Role::firstOrCreate([
@@ -104,7 +105,6 @@ class RolePermissionSeeder extends Seeder
                 'view-sales',
                 'manage-products',
                 'view-products',
-                'manage-stock',
                 'view-stock',
                 'adjust-stock',
                 'view-reports',
