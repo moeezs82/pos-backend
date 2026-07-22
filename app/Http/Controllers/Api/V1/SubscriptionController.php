@@ -8,6 +8,7 @@ use App\Models\Branch;
 use App\Models\BranchSubscription;
 use App\Models\SubscriptionAudit;
 use App\Services\BranchContextService;
+use App\Services\BranchAddonService;
 use App\Services\SubscriptionStatusService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -17,6 +18,7 @@ class SubscriptionController extends Controller
     public function __construct(
         private SubscriptionStatusService $subscriptionService,
         private BranchContextService      $branchContext,
+        private BranchAddonService        $addons,
     ) {}
 
     // ── Status check (authenticated, branch = user's active branch) ───────────
@@ -50,7 +52,9 @@ class SubscriptionController extends Controller
             return ApiResponse::error('No branch selected. Switch to a branch first.', 422);
         }
 
-        $result = $this->subscriptionService->evaluate($branchId);
+        $result = array_merge($this->subscriptionService->evaluate($branchId), [
+            'addons' => $this->addons->activeMap($branchId),
+        ]);
         return ApiResponse::success($result);
     }
 
@@ -120,7 +124,11 @@ class SubscriptionController extends Controller
                 ->pluck('name', 'id')
             : collect();
 
-        $items = $branches->getCollection()->map(function ($row) use ($managers) {
+        $pageAddonMaps = $this->addons->activeMaps(
+            $branches->getCollection()->pluck('id')->map(fn ($id) => (int) $id)->all()
+        );
+
+        $items = $branches->getCollection()->map(function ($row) use ($managers, $pageAddonMaps) {
             $computed = $this->subscriptionService->evaluate((int) $row->id);
             return array_merge($row->toArray(), [
                 'computed_status'      => $computed['status'],
@@ -131,6 +139,9 @@ class SubscriptionController extends Controller
                 'last_updated_by'      => $row->managed_by
                     ? ($managers[$row->managed_by] ?? null)
                     : null,
+                'addons'               => $pageAddonMaps[(int) $row->id] ?? [
+                    BranchAddonService::BARCODE_LABELS => false,
+                ],
             ]);
         });
 
@@ -139,6 +150,10 @@ class SubscriptionController extends Controller
         // cards always show totals even when the list is filtered or paginated.
         $allBranchIds = Branch::whereNull('deleted_at')->pluck('id');
         $summary      = $this->buildSummary($allBranchIds->all());
+        $allAddonMaps = $this->addons->activeMaps($allBranchIds->map(fn ($id) => (int) $id)->all());
+        $summary['barcode_labels_addon'] = collect($allAddonMaps)
+            ->filter(fn (array $map) => (bool) ($map[BranchAddonService::BARCODE_LABELS] ?? false))
+            ->count();
 
         return ApiResponse::success([
             'branches' => $branches->setCollection($items),
@@ -239,6 +254,7 @@ class SubscriptionController extends Controller
             'branch'       => $branch->only(['id', 'name', 'location', 'is_active']),
             'subscription' => $sub,
             'status'       => $status,
+            'addons'       => $this->addons->catalogForBranch($branchId),
         ]);
     }
 
@@ -268,6 +284,8 @@ class SubscriptionController extends Controller
             'suspended_reason' => ['sometimes', 'nullable', 'string', 'max:500'],
             'notes'            => ['sometimes', 'nullable', 'string'],
             'reason'           => ['sometimes', 'nullable', 'string', 'max:1000'],
+            'addons'           => ['sometimes', 'array'],
+            'addons.barcode_labels' => ['sometimes', 'boolean'],
         ]);
 
         if (isset($data['status']) && $data['status'] === 'suspended' && empty($data['suspended_reason'])) {
@@ -278,58 +296,68 @@ class SubscriptionController extends Controller
         // explicit expires_at is given, keep or require one from the operator.
         // We do NOT silently set a fake expiry — the SaaS Owner must be deliberate.
 
-        $sub = BranchSubscription::where('branch_id', $branchId)->first();
-        $old = $sub ? $sub->toArray() : null;
+        $sub = DB::transaction(function () use ($branchId, $branch, $data, $request) {
+            $sub = BranchSubscription::where('branch_id', $branchId)->lockForUpdate()->first();
+            $old = $sub ? $sub->toArray() : null;
 
-        if (!$sub) {
-            $sub = new BranchSubscription(['branch_id' => $branchId]);
-        }
-
-        // Determine the action label for the audit log.
-        $newStatus = $data['status'] ?? $sub->status ?? 'active';
-        $action    = $this->auditAction($sub->status ?? null, $newStatus);
-
-        // Apply changes.
-        foreach (['status', 'expires_at', 'grace_until', 'started_at', 'suspended_reason', 'notes'] as $field) {
-            if (array_key_exists($field, $data)) {
-                $sub->{$field} = $data[$field];
+            if (!$sub) {
+                $sub = new BranchSubscription(['branch_id' => $branchId]);
             }
-        }
 
-        // Clear suspended_reason when un-suspending.
-        if (isset($data['status']) && $data['status'] !== 'suspended') {
-            if (!isset($data['suspended_reason'])) {
+            $newStatus = $data['status'] ?? $sub->status ?? 'active';
+            $action = $this->auditAction($sub->status ?? null, $newStatus);
+
+            foreach (['status', 'expires_at', 'grace_until', 'started_at', 'suspended_reason', 'notes'] as $field) {
+                if (array_key_exists($field, $data)) {
+                    $sub->{$field} = $data[$field];
+                }
+            }
+
+            if (isset($data['status']) && $data['status'] !== 'suspended'
+                && !isset($data['suspended_reason'])) {
                 $sub->suspended_reason = null;
             }
-        }
 
-        $sub->managed_by = $request->user()->id;
-        $sub->save();
+            $sub->managed_by = $request->user()->id;
+            $sub->save();
 
-        // Append audit entry.
-        SubscriptionAudit::create([
-            'branch_id'      => $branchId,
-            'changed_by'     => $request->user()->id,
-            'old_status'     => $old['status'] ?? null,
-            'new_status'     => $sub->status,
-            'old_expires_at' => $old['expires_at'] ?? null,
-            'new_expires_at' => $sub->expires_at,
-            'old_grace_until'=> $old['grace_until'] ?? null,
-            'new_grace_until'=> $sub->grace_until,
-            'action'         => $action,
-            'reason'         => $data['reason'] ?? null,
-            'metadata'       => [
-                'branch_name'  => $branch->name,
-                'changed_by'   => $request->user()->name,
-                'old_snapshot' => $old,
-            ],
-        ]);
+            SubscriptionAudit::create([
+                'branch_id'      => $branchId,
+                'changed_by'     => $request->user()->id,
+                'old_status'     => $old['status'] ?? null,
+                'new_status'     => $sub->status,
+                'old_expires_at' => $old['expires_at'] ?? null,
+                'new_expires_at' => $sub->expires_at,
+                'old_grace_until'=> $old['grace_until'] ?? null,
+                'new_grace_until'=> $sub->grace_until,
+                'action'         => $action,
+                'reason'         => $data['reason'] ?? null,
+                'metadata'       => [
+                    'branch_name'  => $branch->name,
+                    'changed_by'   => $request->user()->name,
+                    'old_snapshot' => $old,
+                ],
+            ]);
+
+            if (array_key_exists('addons', $data)) {
+                $this->addons->updateMany(
+                    $branchId,
+                    $data['addons'],
+                    (int) $request->user()->id,
+                    $data['reason'] ?? null,
+                    ['branch_name' => $branch->name]
+                );
+            }
+
+            return $sub;
+        });
 
         $status = $this->subscriptionService->evaluate($branchId);
 
         return ApiResponse::success([
             'subscription' => $sub->fresh(),
             'status'       => $status,
+            'addons'       => $this->addons->catalogForBranch($branchId),
         ], 'Subscription updated successfully.');
     }
 

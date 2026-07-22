@@ -54,6 +54,8 @@ class CloseFinancialYear extends Command
         'printer_settings',
         'branch_subscriptions',
         'subscription_audits',
+        'branch_addons',
+        'branch_addon_audits',
         'invoice_sequences',
         'personal_access_tokens',
         'sessions',

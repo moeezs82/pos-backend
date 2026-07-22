@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\V1\AccountController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BranchController;
+use App\Http\Controllers\Api\V1\BranchAddonController;
 use App\Http\Controllers\Api\V1\BranchFeatureController;
 use App\Http\Controllers\Api\V1\SubscriptionController;
 use App\Http\Controllers\Api\V1\BrandController;
@@ -87,6 +88,8 @@ Route::prefix('v1')->group(function () {
             ->withoutMiddleware('branch.subscription');
         Route::post('/app-lock-status', [SubscriptionController::class, 'status'])
             ->withoutMiddleware('branch.subscription');
+        Route::get('/branch-addons/current', [BranchAddonController::class, 'current'])
+            ->withoutMiddleware('branch.subscription');
 
         // ── Owner subscription management (exempt from subscription check) ────
         // These routes are protected by their own isMasterAdmin() gate inside
@@ -125,6 +128,12 @@ Route::prefix('v1')->group(function () {
         Route::get('/branch-features/current', [BranchFeatureController::class, 'current'])
             ->withoutMiddleware('branch.subscription');
         Route::middleware('master.admin')->group(function () {
+            Route::get('/branches/{branch}/addons', [BranchAddonController::class, 'show'])
+                ->withoutMiddleware('branch.subscription');
+            Route::put('/branches/{branch}/addons', [BranchAddonController::class, 'update'])
+                ->withoutMiddleware('branch.subscription');
+            Route::get('/branches/{branch}/addons/audit', [BranchAddonController::class, 'audit'])
+                ->withoutMiddleware('branch.subscription');
             Route::get('/branches/{branch}/features', [BranchFeatureController::class, 'show'])
                 ->withoutMiddleware('branch.subscription');
             Route::put('/branches/{branch}/features', [BranchFeatureController::class, 'update'])

@@ -11,6 +11,7 @@ final class PermissionCatalog
         'refund-sale' => ['Sales', 'Process Returns & Refunds', 'Create negative sale items and issue refunds.', 'high', ['view-sales']],
         'view-products' => ['Products & Inventory', 'View Products', 'View the product catalog and prices.', 'normal', []],
         'manage-products' => ['Products & Inventory', 'Manage Products', 'Create, edit, delete, import, and export products.', 'normal', ['view-products']],
+        'print-barcode-labels' => ['Products & Inventory', 'Print Barcode Labels', 'Print product barcode and price labels when the branch add-on is active.', 'normal', ['view-products']],
         'view-stock' => ['Products & Inventory', 'View Stock', 'View branch stock balances.', 'normal', ['view-products']],
         'adjust-stock' => ['Products & Inventory', 'Adjust & Transfer Stock', 'Change stock quantities or transfer stock.', 'high', ['view-stock', 'view-products']],
         'view-categories' => ['Products & Inventory', 'View Categories', 'View product categories.', 'normal', []],

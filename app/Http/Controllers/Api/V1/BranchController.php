@@ -8,12 +8,17 @@ use App\Models\Branch;
 use App\Models\BranchSubscription;
 use App\Models\SubscriptionAudit;
 use App\Services\BranchContextService;
+use App\Services\BranchAddonService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class BranchController extends Controller
 {
-    public function index(Request $request, BranchContextService $branches)
+    public function index(
+        Request $request,
+        BranchContextService $branches,
+        BranchAddonService $addons
+    )
     {
         $query = Branch::query()->orderBy('name');
 
@@ -22,7 +27,17 @@ class BranchController extends Controller
             $branchId ? $query->whereKey($branchId) : $query->whereRaw('1 = 0');
         }
 
-        return ApiResponse::success(['branches' => $query->get()], 'Branches retrieved successfully');
+        $rows = $query->get();
+        $addonMaps = $addons->activeMaps($rows->pluck('id')->map(fn ($id) => (int) $id)->all());
+        $payload = $rows->map(function (Branch $branch) use ($addonMaps) {
+            return array_merge($branch->toArray(), [
+                'addons' => $addonMaps[(int) $branch->id] ?? [
+                    BranchAddonService::BARCODE_LABELS => false,
+                ],
+            ]);
+        })->values();
+
+        return ApiResponse::success(['branches' => $payload], 'Branches retrieved successfully');
     }
 
     public function store(Request $request, BranchContextService $branches)

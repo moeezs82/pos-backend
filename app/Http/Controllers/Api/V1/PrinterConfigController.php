@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Response\ApiResponse;
 use App\Models\PrinterSetting;
 use App\Services\BranchContextService;
+use App\Services\BranchAddonService;
 use Illuminate\Http\Request;
 
 /**
@@ -35,12 +36,19 @@ class PrinterConfigController extends Controller
      * should print with: their branch's own row if one exists, otherwise
      * the global default row, otherwise sensible empty defaults.
      */
-    public function show(Request $request, BranchContextService $branches)
+    public function show(Request $request, BranchContextService $branches, BranchAddonService $addons)
     {
         $branchId = $branches->effectiveBranchId($request);
         $setting = PrinterSetting::forBranch($branchId);
+        $addonActive = $branchId
+            ? $addons->isActive($branchId, BranchAddonService::BARCODE_LABELS)
+            : false;
+        $permissionGranted = $branches->isMasterAdmin($request->user())
+            || $request->user()->can('print-barcode-labels');
 
-        return ApiResponse::success($this->present($setting));
+        return ApiResponse::success(
+            $this->present($setting, $addonActive, $permissionGranted)
+        );
     }
 
     /**
@@ -48,7 +56,7 @@ class PrinterConfigController extends Controller
      * settings screen (so they can see/manage per-branch overrides plus the
      * global default in one place).
      */
-    public function index(Request $request, BranchContextService $branches)
+    public function index(Request $request, BranchContextService $branches, BranchAddonService $addons)
     {
         if (!$branches->isMasterAdmin($request->user())) {
             return ApiResponse::error('Only master admin can manage printer settings.', 403);
@@ -56,8 +64,17 @@ class PrinterConfigController extends Controller
 
         $rows = PrinterSetting::with('branch:id,name')->orderBy('branch_id')->get();
 
+        $branchIds = $rows->pluck('branch_id')->filter()->map(fn ($id) => (int) $id)->all();
+        $addonMaps = $addons->activeMaps($branchIds);
+
         return ApiResponse::success([
-            'settings' => $rows->map(fn (PrinterSetting $row) => $this->present($row))->values(),
+            'settings' => $rows->map(fn (PrinterSetting $row) => $this->present(
+                $row,
+                $row->branch_id
+                    ? (bool) ($addonMaps[(int) $row->branch_id][BranchAddonService::BARCODE_LABELS] ?? false)
+                    : false,
+                true
+            ))->values(),
         ]);
     }
 
@@ -65,7 +82,7 @@ class PrinterConfigController extends Controller
      * POST /printer-config/save — create or update the row for a branch
      * (branch_id = null means "the global default"). Master admin only.
      */
-    public function save(Request $request, BranchContextService $branches)
+    public function save(Request $request, BranchContextService $branches, BranchAddonService $addons)
     {
         if (!$branches->isMasterAdmin($request->user())) {
             return ApiResponse::error('Only master admin can manage printer settings.', 403);
@@ -111,6 +128,46 @@ class PrinterConfigController extends Controller
             'barcode_show_value'             => 'nullable|boolean',
             'barcode_show_price'             => 'nullable|boolean',
         ]);
+
+        $barcodeKeys = [
+            'barcode_print_enabled',
+            'barcode_connection',
+            'barcode_local_printer_name',
+            'barcode_network_ip',
+            'barcode_network_port',
+            'barcode_printer_language',
+            'barcode_label_width_mm',
+            'barcode_label_height_mm',
+            'barcode_label_gap_mm',
+            'barcode_dpi',
+            'barcode_orientation',
+            'barcode_currency',
+            'barcode_show_name',
+            'barcode_show_value',
+            'barcode_show_price',
+        ];
+        $hasBarcodePayload = collect($barcodeKeys)
+            ->contains(fn ($key) => array_key_exists($key, $data));
+        $targetBranchId = isset($data['branch_id']) ? (int) $data['branch_id'] : null;
+        $barcodeAddonActive = $targetBranchId
+            ? $addons->isActive($targetBranchId, BranchAddonService::BARCODE_LABELS)
+            : false;
+
+        if ($hasBarcodePayload && !$barcodeAddonActive) {
+            if (($data['barcode_print_enabled'] ?? false) === true) {
+                return ApiResponse::error(
+                    'Barcode Label Printing is not active for this branch.',
+                    403,
+                    ['code' => 'BARCODE_LABELS_ADDON_REQUIRED']
+                );
+            }
+
+            foreach ($barcodeKeys as $key) {
+                unset($data[$key]);
+            }
+        } elseif ($hasBarcodePayload) {
+            $data['barcode_print_enabled'] = true;
+        }
 
         if ($data['active_connection'] === 'network' && empty($data['network_ip'])) {
             return ApiResponse::error('Enter the printer\'s network address to use a network printer.', 422);
@@ -170,7 +227,10 @@ class PrinterConfigController extends Controller
             $data
         );
 
-        return ApiResponse::success($this->present($setting), 'Printer settings saved.');
+        return ApiResponse::success(
+            $this->present($setting, $barcodeAddonActive, true),
+            'Printer settings saved.'
+        );
     }
 
     /**
@@ -197,8 +257,13 @@ class PrinterConfigController extends Controller
         return ApiResponse::success($data, 'Destination looks valid; attempting test print on device.');
     }
 
-    private function present(?PrinterSetting $setting): array
+    private function present(
+        ?PrinterSetting $setting,
+        bool $barcodeAddonActive = false,
+        bool $barcodePermissionGranted = false
+    ): array
     {
+        $barcodeAccessGranted = $barcodeAddonActive && $barcodePermissionGranted;
         if (!$setting) {
             return [
                 'branch_id'                  => null,
@@ -236,6 +301,9 @@ class PrinterConfigController extends Controller
                 'barcode_show_name'              => true,
                 'barcode_show_value'             => true,
                 'barcode_show_price'             => true,
+                'barcode_addon_active'            => $barcodeAddonActive,
+                'barcode_permission_granted'      => $barcodePermissionGranted,
+                'barcode_access_granted'          => $barcodeAccessGranted,
                 // Legacy keys the existing app build already expects.
                 'main_printer_name'          => null,
                 'kitchen_printer_name'       => null,
@@ -270,7 +338,8 @@ class PrinterConfigController extends Controller
             'secondary_network_port'        => $setting->kitchen_network_port,
             'secondary_local_printer_name'  => $setting->kitchen_local_printer_name,
             'secondary_invoice_template'    => $setting->kitchen_invoice_template ?? InvoiceTemplate::KITCHEN->value,
-            'barcode_print_enabled'         => (bool) ($setting->barcode_print_enabled ?? false),
+            'barcode_print_enabled'         => $barcodeAccessGranted
+                && (bool) ($setting->barcode_print_enabled ?? false),
             'barcode_connection'            => $setting->barcode_connection ?? 'dialog',
             'barcode_local_printer_name'     => $setting->barcode_local_printer_name,
             'barcode_network_ip'             => $setting->barcode_network_ip,
@@ -285,6 +354,9 @@ class PrinterConfigController extends Controller
             'barcode_show_name'              => (bool) ($setting->barcode_show_name ?? true),
             'barcode_show_value'             => (bool) ($setting->barcode_show_value ?? true),
             'barcode_show_price'             => (bool) ($setting->barcode_show_price ?? true),
+            'barcode_addon_active'            => $barcodeAddonActive,
+            'barcode_permission_granted'      => $barcodePermissionGranted,
+            'barcode_access_granted'          => $barcodeAccessGranted,
             // Legacy keys for the existing PrinterConfig.fromJson() shape.
             'main_printer_name'          => $mainPrinterName,
             'kitchen_printer_name'       => $setting->kitchen_print_enabled

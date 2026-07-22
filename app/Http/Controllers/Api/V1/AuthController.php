@@ -7,6 +7,7 @@ use App\Http\Response\ApiResponse;
 use App\Models\User;
 use App\Services\BranchContextService;
 use App\Services\BranchRoleService;
+use App\Services\BranchAddonService;
 use App\Services\BranchPermissionStateService;
 use App\Services\DeliveryBoyCashService;
 use Illuminate\Http\Request;
@@ -113,6 +114,9 @@ class AuthController extends Controller
             'role' => $roles,
             'roles' => $roles,
             'permissions' => $user->getAllPermissions()->pluck('name')->values(),
+            'addons' => $branchId
+                ? app(BranchAddonService::class)->activeMap($branchId)
+                : [BranchAddonService::BARCODE_LABELS => false],
             'permission_version' => app(BranchPermissionStateService::class)->version($branchId),
         ];
 
