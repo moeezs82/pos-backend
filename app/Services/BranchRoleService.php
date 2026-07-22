@@ -23,7 +23,10 @@ class BranchRoleService
      */
     public const BRANCH_SUFFIX_PATTERN = '/\s-\s.*\s\[branch:\d+\]$/u';
 
-    public function __construct(private BranchContextService $branches) {}
+    public function __construct(
+        private BranchContextService $branches,
+        private PermissionDelegationService $permissionDelegation
+    ) {}
 
     public function displayName(string $roleName): string
     {
@@ -220,6 +223,9 @@ class BranchRoleService
                 ]);
             }
 
+            $role->loadMissing('permissions:id,name');
+            $this->permissionDelegation->assertCanAssignRole($request->user(), $role);
+
             return $role;
         }
 
@@ -253,6 +259,8 @@ class BranchRoleService
                 'roles' => ["Role '{$publicName}' is not available for the active branch."],
             ]);
         }
+
+        $this->permissionDelegation->assertCanAssignRole($request->user(), $role);
 
         return $role;
     }

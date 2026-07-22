@@ -23,6 +23,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'branch.context' => ResolveBranchContext::class,
             'branch.subscription' => \App\Http\Middleware\CheckBranchSubscription::class,
             'master.admin' => \App\Http\Middleware\EnsureMasterAdmin::class,
+            'active.user' => \App\Http\Middleware\EnsureActiveUser::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

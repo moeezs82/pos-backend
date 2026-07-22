@@ -132,7 +132,12 @@ class BranchContextService
             return null;
         }
 
-        $branch = Branch::query()->select(['id', 'name', 'location', 'phone', 'currency', 'is_active'])->find($branchId);
+        $columns = ['id', 'name', 'location', 'phone', 'currency', 'is_active'];
+        if ($this->supportsColumn('branches', 'permission_version')) {
+            $columns[] = 'permission_version';
+        }
+
+        $branch = Branch::query()->select($columns)->find($branchId);
 
         return $branch ? $branch->toArray() : null;
     }

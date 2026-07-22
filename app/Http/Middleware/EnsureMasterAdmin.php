@@ -22,7 +22,7 @@ class EnsureMasterAdmin
     public function handle(Request $request, Closure $next)
     {
         if (!$this->branches->isMasterAdmin($request->user())) {
-            return ApiResponse::error('Only Master Admin can manage accounts.', 403);
+            return ApiResponse::error('Only Master Admin can perform this action.', 403);
         }
 
         return $next($request);

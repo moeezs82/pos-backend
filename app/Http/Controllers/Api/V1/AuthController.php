@@ -7,6 +7,7 @@ use App\Http\Response\ApiResponse;
 use App\Models\User;
 use App\Services\BranchContextService;
 use App\Services\BranchRoleService;
+use App\Services\BranchPermissionStateService;
 use App\Services\DeliveryBoyCashService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -49,6 +50,15 @@ class AuthController extends Controller
         $user = $request->user()->load('roles:id,name');
 
         return ApiResponse::success($this->userPayload($user, $cashService), 'User fetched successfully');
+    }
+
+    public function permissionVersion(Request $request, BranchPermissionStateService $permissionState)
+    {
+        $branchId = $request->user()?->branch_id ? (int) $request->user()->branch_id : null;
+        return ApiResponse::success([
+            'branch_id' => $branchId,
+            'permission_version' => $permissionState->version($branchId),
+        ]);
     }
 
     public function logout(Request $request)
@@ -103,6 +113,7 @@ class AuthController extends Controller
             'role' => $roles,
             'roles' => $roles,
             'permissions' => $user->getAllPermissions()->pluck('name')->values(),
+            'permission_version' => app(BranchPermissionStateService::class)->version($branchId),
         ];
 
         if ($roles->contains(fn ($role) => User::normalizeRoleName((string) $role) === User::normalizeRoleName('delivery'))) {

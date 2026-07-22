@@ -16,6 +16,7 @@ use App\Http\Controllers\Api\V1\EnterpriseReportController;
 use App\Http\Controllers\Api\V1\ExpenseController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PaymentMethodController;
+use App\Http\Controllers\Api\V1\PermissionAuditLogController;
 use App\Http\Controllers\Api\V1\PrinterConfigController;
 use App\Http\Controllers\Api\V1\ProductController;
 use App\Http\Controllers\Api\V1\PurchaseClaimController;
@@ -45,7 +46,7 @@ Route::get('/test', function () {
 Route::prefix('v1')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
 
-    Route::middleware(['auth:sanctum', 'branch.context', 'branch.subscription'])->group(function () {
+    Route::middleware(['auth:sanctum', 'active.user', 'branch.context', 'branch.subscription'])->group(function () {
         // ── Routes exempt from subscription enforcement ────────────────────────
         // These must remain accessible even when a branch is expired/suspended so
         // the Flutter client can display the lock screen, switch to another branch,
@@ -53,6 +54,8 @@ Route::prefix('v1')->group(function () {
         Route::post('/logout', [AuthController::class, 'logout'])
             ->withoutMiddleware('branch.subscription');
         Route::get('/me', [AuthController::class, 'me'])
+            ->withoutMiddleware('branch.subscription');
+        Route::get('/permission-version', [AuthController::class, 'permissionVersion'])
             ->withoutMiddleware('branch.subscription');
         Route::post('auth/verify-password', [AuthController::class, 'verifyPassword'])
             ->withoutMiddleware('branch.subscription');
@@ -126,6 +129,8 @@ Route::prefix('v1')->group(function () {
                 ->withoutMiddleware('branch.subscription');
             Route::put('/branches/{branch}/features', [BranchFeatureController::class, 'update'])
                 ->withoutMiddleware('branch.subscription');
+            Route::get('/permission-audit-logs', [PermissionAuditLogController::class, 'index'])
+                ->withoutMiddleware('branch.subscription');
         });
 
         // users
@@ -149,11 +154,11 @@ Route::prefix('v1')->group(function () {
         });
 
         // Roles
-        Route::prefix('roles')->middleware('permission:view-roles')->group(function () {
-            Route::get('/',           [RoleController::class, 'index']);
+        Route::prefix('roles')->group(function () {
+            Route::get('/',           [RoleController::class, 'index'])->middleware('permission:view-roles|manage-users');
             Route::post('/',           [RoleController::class, 'store'])->middleware('permission:manage-roles');
-            Route::get('/permissions',    [RoleController::class, 'availablePermissions']);
-            Route::get('/{role}',    [RoleController::class, 'show']);
+            Route::get('/permissions',    [RoleController::class, 'availablePermissions'])->middleware('permission:view-roles|manage-roles');
+            Route::get('/{role}',    [RoleController::class, 'show'])->middleware('permission:view-roles|manage-users');
             Route::put('/{role}',    [RoleController::class, 'update'])->middleware('permission:manage-roles');
             Route::delete('/{role}',    [RoleController::class, 'destroy'])->middleware('permission:manage-roles');
             Route::post('/{role}/permissions', [RoleController::class, 'syncPermissions'])->middleware('permission:manage-roles');

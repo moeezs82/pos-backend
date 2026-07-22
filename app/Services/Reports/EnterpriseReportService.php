@@ -952,6 +952,7 @@ class EnterpriseReportService
 
     private function profitLoss(array $f, bool $export): array
     {
+        \Log::info($f);
         /*
      * Sales
      */
