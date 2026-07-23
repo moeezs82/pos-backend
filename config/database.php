@@ -34,7 +34,11 @@ return [
         'sqlite' => [
             'driver' => 'sqlite',
             'url' => env('DB_URL'),
-            'database' => env('DB_DATABASE', database_path('database.sqlite')),
+            // env() returns "" when DB_DATABASE= is blank in .env, which fails PDO.
+            // The ?: operator falls back to database_path() for both null AND empty string,
+            // so the client's .env can leave DB_DATABASE blank and the path auto-resolves
+            // correctly regardless of where the app is installed.
+            'database' => env('DB_DATABASE') ?: database_path('database.sqlite'),
             'prefix' => '',
             'foreign_key_constraints' => env('DB_FOREIGN_KEYS', true),
             'busy_timeout' => null,
