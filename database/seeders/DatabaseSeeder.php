@@ -26,7 +26,7 @@ class DatabaseSeeder extends Seeder
             [
                 'name' => 'Master Admin',
                 'phone' => null,
-                'password' => Hash::make('password'),
+                'password' => Hash::make('password@1234.'),
                 'branch_id' => null,
                 'is_active' => true,
             ]
