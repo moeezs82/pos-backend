@@ -39,7 +39,6 @@ class BranchAddonController extends Controller
 
     public function update(Request $request, Branch $branch)
     {
-        \Log::info($this->requireOwner($request), $request->all());
         $this->requireOwner($request);
         $data = $request->validate([
             'addons'                      => ['required', 'array'],

@@ -123,12 +123,13 @@ class ProductController extends Controller
             if ($request->hasFile('image')) {
                 $file = $request->file('image');
                 $name = 'p_' . time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
-                $dir = public_path('images/products');
+                // Store under branch sub-folder so images are partitioned by branch.
+                $dir = public_path('images/products/' . $branchId);
                 if (!is_dir($dir)) {
                     mkdir($dir, 0755, true);
                 }
                 $file->move($dir, $name);
-                $data['image'] = 'images/products/' . $name;
+                $data['image'] = 'images/products/' . $branchId . '/' . $name;
             }
 
             $product = Product::create($data);
@@ -232,7 +233,8 @@ class ProductController extends Controller
             'tax_inclusive' => 'boolean',
             'discount' => 'nullable|numeric',
             'is_active' => 'boolean',
-            'image' => 'nullable|image|mimes:jpg,jpeg,png,webp|max:2048',
+            'image'        => 'nullable|image|mimes:jpg,jpeg,png,webp|max:2048',
+            'remove_image' => 'sometimes|boolean',
         ]);
 
         if (!empty($data['vendor_id'])) {
@@ -243,19 +245,29 @@ class ProductController extends Controller
         }
 
         if ($request->hasFile('image')) {
+            // Delete old image before replacing.
             if (!empty($product->image) && file_exists(public_path($product->image))) {
                 @unlink(public_path($product->image));
             }
 
             $file = $request->file('image');
             $name = 'p_' . time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
-            $dir = public_path('images/products');
+            $dir  = public_path('images/products/' . $branchId);
             if (!is_dir($dir)) {
                 mkdir($dir, 0755, true);
             }
             $file->move($dir, $name);
-            $data['image'] = 'images/products/' . $name;
+            $data['image'] = 'images/products/' . $branchId . '/' . $name;
+        } elseif ($request->boolean('remove_image')) {
+            // Explicit removal — delete the file and null the column.
+            if (!empty($product->image) && file_exists(public_path($product->image))) {
+                @unlink(public_path($product->image));
+            }
+            $data['image'] = null;
         }
+
+        // Don't pass the helper field through to the model.
+        unset($data['remove_image']);
 
         if ($product->cost_price != ($data['cost_price'] ?? $product->cost_price)) {
             DB::table('product_stocks')
