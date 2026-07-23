@@ -11,6 +11,7 @@ use App\Models\Vendor;
 use App\Services\AccountingService;
 use App\Services\CashSyncService;
 use App\Services\BranchContextService;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -32,10 +33,19 @@ class PurchaseClaimController extends Controller
             $query->where('status', $request->status);
         }
         if ($request->filled('date_from')) {
-            $query->whereDate('created_at', '>=', $request->date_from);
+            $query->where(
+                'created_at',
+                '>=',
+                Carbon::parse($request->date_from)->startOfDay()
+            );
         }
+
         if ($request->filled('date_to')) {
-            $query->whereDate('created_at', '<=', $request->date_to);
+            $query->where(
+                'created_at',
+                '<',
+                Carbon::parse($request->date_to)->addDay()->startOfDay()
+            );
         }
         if ($search = $request->get('search')) {
             $query->where(function ($q) use ($search) {

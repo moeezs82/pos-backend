@@ -16,6 +16,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use App\Models\RegisterShift;
+use Carbon\Carbon;
 
 class SaleController extends Controller
 {
@@ -36,12 +37,22 @@ class SaleController extends Controller
             $query->where('vendor_id', $request->vendor_id);
         }
 
+        // Use direct range comparisons instead of whereDate() so the existing
+        // (created_at, branch_id, status) index can be used by SQLite.
         if ($request->filled('date_from')) {
-            $query->whereDate('created_at', '>=', $request->date_from);
+            $query->where(
+                'created_at',
+                '>=',
+                Carbon::parse($request->date_from)->startOfDay()
+            );
         }
 
         if ($request->filled('date_to')) {
-            $query->whereDate('created_at', '<=', $request->date_to);
+            $query->where(
+                'created_at',
+                '<',
+                Carbon::parse($request->date_to)->addDay()->startOfDay()
+            );
         }
 
         if ($request->has('search')) {
@@ -223,8 +234,10 @@ class SaleController extends Controller
         }
         if ($registerShift->status !== 'open') {
             $occurredAtForShift = !empty($data['occurred_at']) ? \Carbon\Carbon::parse($data['occurred_at']) : now();
-            if ($occurredAtForShift->lt($registerShift->opened_at) ||
-                ($registerShift->closed_at && $occurredAtForShift->gt($registerShift->closed_at))) {
+            if (
+                $occurredAtForShift->lt($registerShift->opened_at) ||
+                ($registerShift->closed_at && $occurredAtForShift->gt($registerShift->closed_at))
+            ) {
                 throw \Illuminate\Validation\ValidationException::withMessages([
                     'register_shift' => ['Offline sale time is outside the referenced shift.'],
                 ]);
@@ -710,7 +723,7 @@ class SaleController extends Controller
 
         $found = Sale::whereIn('client_ref', $refs)
             ->get(['id', 'client_ref', 'invoice_no', 'offline_invoice_no', 'total'])
-            ->map(fn ($sale) => [
+            ->map(fn($sale) => [
                 'client_ref'         => $sale->client_ref,
                 'id'                 => $sale->id,
                 'invoice_no'         => $sale->invoice_no,

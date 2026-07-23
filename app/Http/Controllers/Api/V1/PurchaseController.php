@@ -11,6 +11,7 @@ use App\Models\Vendor;
 use App\Services\BranchContextService;
 use App\Services\ProductBranchService;
 use App\Services\VendorPaymentService;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -28,10 +29,19 @@ class PurchaseController extends Controller
             $query->where('vendor_id', $request->vendor_id);
         }
         if ($request->filled('date_from')) {
-            $query->whereDate('created_at', '>=', $request->date_from);
+            $query->where(
+                'created_at',
+                '>=',
+                Carbon::parse($request->date_from)->startOfDay()
+            );
         }
+
         if ($request->filled('date_to')) {
-            $query->whereDate('created_at', '<=', $request->date_to);
+            $query->where(
+                'created_at',
+                '<',
+                Carbon::parse($request->date_to)->addDay()->startOfDay()
+            );
         }
         if ($request->filled('search')) {
             $search = $request->search;
@@ -163,7 +173,7 @@ class PurchaseController extends Controller
             'payments.*.paid_at'   => 'nullable|date',
             'payments.*.reference' => 'nullable|string',
             'payments.*.note'      => 'nullable|string',
-            'payments.*.client_ref'=> 'nullable|string',
+            'payments.*.client_ref' => 'nullable|string',
         ]);
 
         $receiveNow = (bool)($data['receive_now'] ?? false);
@@ -246,7 +256,7 @@ class PurchaseController extends Controller
                     branchId: $p->branch_id,
                     receiveQty: $item->quantity,
                     // unitPrice: $item->price,
-                    unitPrice: $lineTotal/$item->quantity, // in case of line discount
+                    unitPrice: $lineTotal / $item->quantity, // in case of line discount
                     ref: $p->invoice_no
                 );
             }

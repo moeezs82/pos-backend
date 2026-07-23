@@ -34,10 +34,19 @@ class SaleReturnController extends Controller
         }
 
         if ($request->filled('date_from')) {
-            $query->whereDate('created_at', '>=', $request->date_from);
+            $query->where(
+                'created_at',
+                '>=',
+                Carbon::parse($request->date_from)->startOfDay()
+            );
         }
+
         if ($request->filled('date_to')) {
-            $query->whereDate('created_at', '<=', $request->date_to);
+            $query->where(
+                'created_at',
+                '<',
+                Carbon::parse($request->date_to)->addDay()->startOfDay()
+            );
         }
 
         if ($request->status) {
@@ -459,7 +468,7 @@ class SaleReturnController extends Controller
                         'refunded_at' => data_get($data, 'refund.refunded_at'),
                     ],
                 ]);
-                $fake->setUserResolver(fn () => $request->user());
+                $fake->setUserResolver(fn() => $request->user());
 
                 return $this->approve(
                     $fake,
@@ -744,5 +753,4 @@ class SaleReturnController extends Controller
             ], 'Refund posted successfully');
         });
     }
-
 }
