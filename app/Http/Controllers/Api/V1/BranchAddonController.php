@@ -39,11 +39,15 @@ class BranchAddonController extends Controller
 
     public function update(Request $request, Branch $branch)
     {
+        \Log::info($this->requireOwner($request), $request->all());
         $this->requireOwner($request);
         $data = $request->validate([
-            'addons' => ['required', 'array'],
-            'addons.barcode_labels' => ['sometimes', 'boolean'],
-            'reason' => ['nullable', 'string', 'max:1000'],
+            'addons'                      => ['required', 'array'],
+            'addons.barcode_labels'       => ['sometimes', 'boolean'],
+            'addons.loan_module'          => ['sometimes', 'boolean'],
+            'addons.qameti_module'        => ['sometimes', 'boolean'],
+            'addons.whatsapp_invoice'     => ['sometimes', 'boolean'],
+            'reason'                      => ['nullable', 'string', 'max:1000'],
         ]);
 
         $catalog = $this->addons->updateMany(

@@ -53,7 +53,11 @@ class ProfitLossService
         ];
 
         // ---------- Base query (GL) ----------
-        $effDateExpr = "COALESCE(jp.created_at, je.entry_date, je.created_at)";
+        // je.entry_date is the accounting date (pure Y-m-d) set by the posting service.
+        // je.created_at is the insert timestamp, used only as fallback.
+        // jp.created_at (a posting-row timestamp) must NOT be first — it is never null
+        // and would permanently shadow je.entry_date, putting every entry on its insert date.
+        $effDateExpr = "DATE(COALESCE(je.entry_date, je.created_at))";
 
         $q = DB::table('journal_postings as jp')
             ->join('journal_entries as je', 'je.id', '=', 'jp.journal_entry_id')
@@ -62,10 +66,12 @@ class ProfitLossService
             ->whereIn('t.code', $typeCodes);
 
         if ($from) {
-            $q->whereRaw("$effDateExpr >= ?", [$from->format('Y-m-d H:i:s')]);
+            // Use toDateString() (Y-m-d) — comparing a pure date string against a
+            // datetime string in SQLite causes lexicographic mismatch (BUG-2 fix).
+            $q->whereRaw("$effDateExpr >= ?", [$from->toDateString()]);
         }
         if ($to) {
-            $q->whereRaw("$effDateExpr <= ?", [$to->format('Y-m-d H:i:s')]);
+            $q->whereRaw("$effDateExpr <= ?", [$to->toDateString()]);
         }
         if ($branchId) {
             $q->where('je.branch_id', $branchId);

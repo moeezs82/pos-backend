@@ -151,9 +151,10 @@ class SubscriptionController extends Controller
         $allBranchIds = Branch::whereNull('deleted_at')->pluck('id');
         $summary      = $this->buildSummary($allBranchIds->all());
         $allAddonMaps = $this->addons->activeMaps($allBranchIds->map(fn ($id) => (int) $id)->all());
-        $summary['barcode_labels_addon'] = collect($allAddonMaps)
-            ->filter(fn (array $map) => (bool) ($map[BranchAddonService::BARCODE_LABELS] ?? false))
-            ->count();
+        $summary['barcode_labels_addon']   = collect($allAddonMaps)->filter(fn ($m) => (bool) ($m[BranchAddonService::BARCODE_LABELS]    ?? false))->count();
+        $summary['loan_module_addon']       = collect($allAddonMaps)->filter(fn ($m) => (bool) ($m[BranchAddonService::LOAN_MODULE]      ?? false))->count();
+        $summary['qameti_module_addon']     = collect($allAddonMaps)->filter(fn ($m) => (bool) ($m[BranchAddonService::QAMETI_MODULE]    ?? false))->count();
+        $summary['whatsapp_invoice_addon']  = collect($allAddonMaps)->filter(fn ($m) => (bool) ($m[BranchAddonService::WHATSAPP_INVOICE] ?? false))->count();
 
         return ApiResponse::success([
             'branches' => $branches->setCollection($items),
@@ -284,8 +285,11 @@ class SubscriptionController extends Controller
             'suspended_reason' => ['sometimes', 'nullable', 'string', 'max:500'],
             'notes'            => ['sometimes', 'nullable', 'string'],
             'reason'           => ['sometimes', 'nullable', 'string', 'max:1000'],
-            'addons'           => ['sometimes', 'array'],
-            'addons.barcode_labels' => ['sometimes', 'boolean'],
+            'addons'                      => ['sometimes', 'array'],
+            'addons.barcode_labels'       => ['sometimes', 'boolean'],
+            'addons.loan_module'          => ['sometimes', 'boolean'],
+            'addons.qameti_module'        => ['sometimes', 'boolean'],
+            'addons.whatsapp_invoice'     => ['sometimes', 'boolean'],
         ]);
 
         if (isset($data['status']) && $data['status'] === 'suspended' && empty($data['suspended_reason'])) {

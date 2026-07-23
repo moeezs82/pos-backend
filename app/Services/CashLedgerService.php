@@ -6,6 +6,7 @@ use App\Enums\CashLedgerCategory;
 use App\Models\Account;
 use App\Models\CashLedgerEntry;
 use App\Models\JournalEntry;
+use App\Services\BranchAddonService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use App\Models\RegisterShift;
@@ -27,7 +28,10 @@ class CashLedgerService
         \App\Models\Vendor::class,
     ];
 
-    public function __construct(private readonly AccountingService $accounting) {}
+    public function __construct(
+        private readonly AccountingService  $accounting,
+        private readonly BranchAddonService $addons,
+    ) {}
 
     /**
      * Create a non-sales cash entry: write the domain row AND post the balanced
@@ -54,6 +58,14 @@ class CashLedgerService
         $category = $data['category'] instanceof CashLedgerCategory
             ? $data['category']
             : CashLedgerCategory::from($data['category']);
+
+        // Commercial add-on enforcement — must be checked before any validation
+        // or financial logic so that disabled addon transactions are rejected at
+        // the domain boundary, not just hidden in the UI.
+        $branchIdForAddon = isset($data['branch_id']) ? (int) $data['branch_id'] : null;
+        if ($branchIdForAddon !== null) {
+            $this->assertAddonActive($category, $branchIdForAddon);
+        }
 
         $amount = $this->normalizeAmount($data['amount']);
 
@@ -349,6 +361,40 @@ class CashLedgerService
             ]);
         }
         return $account;
+    }
+
+    /**
+     * Reject loan or qameti entries for branches that have not purchased the
+     * corresponding commercial add-on. OTHER_EXPENSE is always allowed because
+     * it is the base expense recording feature, not a separately purchasable
+     * module.
+     *
+     * Throwing here — before any DB writes — means a disabled-addon branch
+     * cannot create even a single loan or qameti journal entry regardless of
+     * what the client sends.
+     */
+    private function assertAddonActive(CashLedgerCategory $category, int $branchId): void
+    {
+        $required = match ($category) {
+            CashLedgerCategory::LOAN_GIVEN,
+            CashLedgerCategory::LOAN_RECOVERED  => BranchAddonService::LOAN_MODULE,
+            CashLedgerCategory::QAMETI_PAYMENT,
+            CashLedgerCategory::QAMETI_COLLECTION => BranchAddonService::QAMETI_MODULE,
+            default                              => null,
+        };
+
+        if ($required === null) {
+            return; // OTHER_EXPENSE — always permitted
+        }
+
+        if (!$this->addons->isActive($branchId, $required)) {
+            throw ValidationException::withMessages([
+                'category' => [
+                    "The {$category->label()} feature is not active for this branch. "
+                    . 'Contact the platform owner to enable it.',
+                ],
+            ]);
+        }
     }
 
     private function normalizeAmount(float|int|string $amount): float

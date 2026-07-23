@@ -82,8 +82,10 @@ class LedgerService
             $controlAccountIds = [0]; // no control account => empty ledger, never leak
         }
 
-        // Effective date expression for ordering and range
-        $effDateExpr = "COALESCE(jp.created_at, je.entry_date, je.created_at)";
+        // Effective date expression for ordering and range.
+        // je.entry_date is the accounting date set by the posting service.
+        // jp.created_at must NOT be first — it is never null and would shadow entry_date.
+        $effDateExpr = "COALESCE(je.entry_date, je.created_at)";
 
         // -----------------------------
         // 1) Opening balance (before from)

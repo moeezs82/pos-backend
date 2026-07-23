@@ -15,12 +15,27 @@ use Illuminate\Validation\ValidationException;
  */
 class BranchAddonService
 {
-    public const BARCODE_LABELS = 'barcode_labels';
+    public const BARCODE_LABELS  = 'barcode_labels';
+    public const LOAN_MODULE     = 'loan_module';
+    public const QAMETI_MODULE   = 'qameti_module';
+    public const WHATSAPP_INVOICE = 'whatsapp_invoice';
 
     private const CATALOG = [
         self::BARCODE_LABELS => [
-            'label' => 'Barcode Label Printing',
+            'label'       => 'Barcode Label Printing',
             'description' => 'Print product barcode and price labels using a configured label printer.',
+        ],
+        self::LOAN_MODULE => [
+            'label'       => 'Loan Management',
+            'description' => 'Record and track cash loans given to and recovered from customers, vendors, or staff.',
+        ],
+        self::QAMETI_MODULE => [
+            'label'       => 'Qameti Management',
+            'description' => 'Record committee/Qameti installment payments and collection payouts.',
+        ],
+        self::WHATSAPP_INVOICE => [
+            'label'       => 'WhatsApp Invoice Assistant',
+            'description' => 'Prepare the sale PDF and open WhatsApp so the cashier can send the invoice manually.',
         ],
     ];
 
